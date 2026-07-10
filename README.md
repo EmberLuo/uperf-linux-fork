@@ -214,7 +214,7 @@ the Free Software Foundation, either version 3 of the License, or
 - [x] DBus interface (org.uperflinux.Daemon)
 - [x] Qt6/QML GUI (Dashboard, Games, Settings, Logs)
 - [x] deb packaging (dpkg-deb)
-- [ ] Unit tests (expand test coverage)
+- [x] Unit tests (75 tests across 5 test files)
 - [ ] Thermal awareness (read /sys/class/thermal/)
 - [ ] Per-app power mode auto-switching
 - [ ] Config generation wizard for new SoCs
