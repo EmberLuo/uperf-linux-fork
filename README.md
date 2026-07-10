@@ -1,12 +1,12 @@
 # uperf-linux
 
 > Userspace performance scheduler for Linux ARM64 gaming devices.
-> Inspired by [Uperf-Game-Turbo](https://github.com/yinwanxi/Uperf-Game-Turbo) (Android Magisk module).
 
 ## Overview
 
 `uperf-linux` is a systemd-managed daemon with a Qt6/QML GUI that provides fine-grained CPU/GPU scheduling
-for gaming on Linux ARM64 devices. It borrows the core design philosophy from Uperf-Game-Turbo:
+for gaming on Linux ARM64 devices. It uses a JSON-driven configuration approach with scene-based state machines,
+touch-aware pacing, and power model optimization.
 
 - **JSON-config-driven** sysfs knob writing (cpufreq, devfreq, uClamp)
 - **Scene-based state machine** (idle → touch → trigger → gesture → junk → switch → boost)
@@ -14,8 +14,6 @@ for gaming on Linux ARM64 devices. It borrows the core design philosophy from Up
 - **Power model** — finds the "sweet spot" on the P-F curve for each cluster
 - **HeavyLoad detection** — automatic boost mode when sustained load exceeds threshold
 - **Task affinity management** — pins game threads to performance cores via cgroup v2
-
-Unlike the Android original, this runs on **standard Linux** (no Magisk, no AOSP, no Binder IPC).
 
 ## Architecture
 
@@ -36,6 +34,7 @@ Unlike the Android original, this runs on **standard Linux** (no Magisk, no AOSP
 │  CgroupMgr    ←→ cgroup v2 slices + uClamp                   │
 │  HeavyLoad    ←→ /proc/stat polling                          │
 │  GameScanner  ←→ /proc/*/comm + /proc/*/cmdline matching     │
+│  DBusManager  ←→ org.uperflinux.Daemon (system bus)          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,13 +79,13 @@ dbus-send --system --dest=org.uperflinux.Daemon --print-reply \
 
 ```bash
 # Debian/Ubuntu
-sudo apt install cmake pkg-config libjson-c-dev libsystemd-dev
+sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev
 
 # Arch Linux
-sudo pacman -S cmake json-c systemd-libs
+sudo pacman -S cmake json-c systemd-libs glib2
 
 # Fedora
-sudo dnf install cmake pkg-config json-c-devel systemd-devel
+sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel
 ```
 
 ### Build
@@ -188,22 +187,9 @@ Three power modes, each with per-scene overrides:
 }
 ```
 
-## Design Decisions vs. Android Original
-
-| Feature | Android uperf | uperf-linux |
-|---------|--------------|-------------|
-| Binary | NDK r24 (Bionic libc) | GCC/Clang (glibc/musl) |
-| Process model | Shell scripts + binary | Single systemd daemon |
-| cgroup | `/dev/cpuset/*/tasks` | cgroup v2 hierarchy |
-| GPU control | kgsl sysfs | devfreq (`msm_dvfs`) |
-| Task scheduling | cpuset assignment | cgroup v2 + uClamp |
-| Render hints | SurfaceFlinger injection | N/A (dropped) |
-| SoC detection | `getprop` | `/sys/devices/soc0/` |
-| Service mgmt | Magisk lifecycle | systemd |
-
 ## License
 
-MIT License (same as the original uperf project's Apache 2.0 spirit — adapt as needed).
+MIT License
 
 ## Development Roadmap
 
@@ -225,6 +211,5 @@ MIT License (same as the original uperf project's Apache 2.0 spirit — adapt as
 - [x] deb packaging (dpkg-deb)
 - [ ] Unit tests (expand test coverage)
 - [ ] Thermal awareness (read /sys/class/thermal/)
-- [ ] DRM/Modesetting hook (Linux equivalent of SfAnalysis)
 - [ ] Per-app power mode auto-switching
 - [ ] Config generation wizard for new SoCs
