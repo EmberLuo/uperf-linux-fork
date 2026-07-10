@@ -2,6 +2,8 @@
 
 > Userspace performance scheduler for Linux ARM64 gaming devices.
 
+[中文文档](README_zh.md) | [License](LICENSE) | [GitHub](https://github.com/code002-2/uperf-linux)
+
 ## Overview
 
 `uperf-linux` is a systemd-managed daemon with a Qt6/QML GUI that provides fine-grained CPU/GPU scheduling
