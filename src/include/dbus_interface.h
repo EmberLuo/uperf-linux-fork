@@ -91,4 +91,15 @@ void dbus_manager_set_thermal_state(DbusManager *mgr, int max_temp_millidegC,
 void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_name,
                                  const char *mode);
 
+/* Manual frequency override — set CPU/GPU frequency directly.
+ * cluster: 0=prime, 1=perf, 2=eff, 3=auto=all; -1=GPU
+ * freq_hz: target frequency in Hz (0 = release override, resume auto)
+ * Returns TRUE if override was accepted. */
+gboolean dbus_manager_set_manual_freq(DbusManager *mgr, int cluster,
+                                       gint64 freq_hz);
+
+/* Get the current manual frequency override.
+ * Returns the overridden frequency in Hz, or 0 if no override. */
+gint64 dbus_manager_get_manual_freq(const DbusManager *mgr, int cluster);
+
 #endif /* UPERF_DBUS_INTERFACE_H */

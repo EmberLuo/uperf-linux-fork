@@ -39,6 +39,10 @@ struct DbusManager {
     /* Mode change handler */
     DbusSetModeFunc    set_mode_cb;
     void              *set_mode_ud;
+
+    /* Manual frequency overrides: -1=GPU, 0..3=CPU clusters */
+    gint64             manual_freq[5];  /* [gpu, prime, perf, eff, unknown] */
+    gboolean           manual_active;
 };
 
 /* DBus XML interface — embedded directly to avoid codegen step */
@@ -70,6 +74,9 @@ static const gchar introspection_xml[] =
     "    <property name=\"ThermalState\" type=\"s\" access=\"read\">\n"
     "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
     "    </property>\n"
+    "    <property name=\"ManualFreqOverride\" type=\"ax\" access=\"read\">\n"
+    "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
+    "    </property>\n"
     "    <method name=\"SetMode\">\n"
     "      <arg direction=\"in\" type=\"s\" name=\"mode\"/>\n"
     "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
@@ -81,6 +88,11 @@ static const gchar introspection_xml[] =
     "      <arg direction=\"in\" type=\"i\" name=\"pid\"/>\n"
     "      <arg direction=\"in\" type=\"s\" name=\"app\"/>\n"
     "      <arg direction=\"in\" type=\"s\" name=\"mode\"/>\n"
+    "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
+    "    </method>\n"
+    "    <method name=\"SetManualFreq\">\n"
+    "      <arg direction=\"in\" type=\"i\" name=\"cluster\"/>\n"
+    "      <arg direction=\"in\" type=\"x\" name=\"freq_hz\"/>\n"
     "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
     "    </method>\n"
     "    <signal name=\"ModeChanged\">\n"
@@ -95,6 +107,10 @@ static const gchar introspection_xml[] =
     "    </signal>\n"
     "    <signal name=\"HeavyLoadStateChanged\">\n"
     "      <arg type=\"b\" name=\"active\"/>\n"
+    "    </signal>\n"
+    "    <signal name=\"ManualFreqChanged\">\n"
+    "      <arg type=\"i\" name=\"cluster\"/>\n"
+    "      <arg type=\"x\" name=\"freq_hz\"/>\n"
     "    </signal>\n"
     "  </interface>\n"
     "</node>";
@@ -175,6 +191,15 @@ static GVariant *handle_method_call(GDBusConnection      *connection,
         g_dbus_method_invocation_return_value(invocation,
             g_variant_new("(b)", TRUE));
         return NULL;
+    } else if (strcmp(method_name, "SetManualFreq") == 0) {
+        DbusManager *mgr = (DbusManager *)user_data;
+        int cluster_in;
+        gint64 freq_in;
+        g_variant_get(parameters, "(ix)", &cluster_in, &freq_in);
+        gboolean ok = dbus_manager_set_manual_freq(mgr, cluster_in, freq_in);
+        g_dbus_method_invocation_return_value(invocation,
+            g_variant_new("(b)", ok));
+        return NULL;
     }
     return NULL;
 }
@@ -234,6 +259,15 @@ static GVariant *on_get_thermal_state(DbusManager *mgr) {
     return g_variant_new_string(mgr->thermal_state_str[0] ? mgr->thermal_state_str : "normal");
 }
 
+static GVariant *on_get_manual_freq_override(DbusManager *mgr) {
+    GVariantBuilder builder;
+    g_variant_builder_init(&builder, G_VARIANT_TYPE("a(x)"));
+    for (int i = 0; i < 5; i++) {
+        g_variant_builder_add(&builder, "(ix)", i, mgr->manual_freq[i]);
+    }
+    return g_variant_builder_end(&builder);
+}
+
 /* Property query dispatcher */
 static GVariant *on_get_property(GObject         *object,
                                   guint            prop_id,
@@ -251,6 +285,7 @@ static GVariant *on_get_property(GObject         *object,
         case 6: g_value_set_boxed(value, on_get_game_processes(mgr)); break;
         case 7: g_value_set_int32(value, on_get_max_temperature(mgr)); break;
         case 8: g_value_set_string(value, on_get_thermal_state(mgr)); break;
+        case 9: g_value_set_boxed(value, on_get_manual_freq_override(mgr)); break;
         default: return NULL;
     }
     return NULL;
@@ -269,6 +304,7 @@ enum {
     PROP_GAME_PROCESSES,
     PROP_MAX_TEMPERATURE,
     PROP_THERMAL_STATE,
+    PROP_MANUAL_FREQ_OVERRIDE,
     N_PROPS
 };
 
@@ -323,6 +359,8 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
     mgr->games = calloc(mgr->games_cap, sizeof(GameProcessEntry));
     mgr->max_temp_millidegC = 0;
     mgr->thermal_state_str[0] = '\0';
+    memset(mgr->manual_freq, 0, sizeof(mgr->manual_freq));
+    mgr->manual_active = FALSE;
 
     /* Connect to bus */
     GError *err = NULL;
@@ -359,6 +397,10 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
     properties[PROP_THERMAL_STATE] =
         g_param_spec_string("ThermalState", "Thermal State", "Current thermal state",
                             "normal", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+    properties[PROP_MANUAL_FREQ_OVERRIDE] =
+        g_param_spec_boxed("ManualFreqOverride", "Manual Freq Override",
+                           "Array of (index, freq_hz) tuples for manual overrides",
+                           G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
 
     /* Export object — use GDBusObjectSkeleton for full control */
     mgr->export_id = 0;  /* Will be set via GDBusInterfaceSkeleton */
@@ -518,4 +560,44 @@ void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_nam
         mgr->games[idx].comm = g_strdup(app_name);
         mgr->games[idx].mode = g_strdup(mode);
     }
+}
+
+gboolean dbus_manager_set_manual_freq(DbusManager *mgr, int cluster, gint64 freq_hz) {
+    if (!mgr) return FALSE;
+
+    /* Validate cluster index: -1=GPU, 0..3=CPU clusters */
+    if (cluster < -1 || cluster > 3) {
+        log_warn("Manual freq: invalid cluster %d", cluster);
+        return FALSE;
+    }
+
+    /* freq_hz=0 means release override */
+    if (freq_hz == 0) {
+        int idx = cluster + 1;  /* -1+1=0=gpu index */
+        mgr->manual_freq[idx] = 0;
+        mgr->manual_active = FALSE;
+        /* Check if any override remains */
+        for (int i = 0; i < 5; i++) {
+            if (mgr->manual_freq[i] > 0) {
+                mgr->manual_active = TRUE;
+                break;
+            }
+        }
+        log_info("Manual freq: released cluster %s (%d)",
+                 cluster == -1 ? "GPU" : "CPU", cluster);
+        return TRUE;
+    }
+
+    int idx = cluster + 1;
+    mgr->manual_freq[idx] = freq_hz;
+    mgr->manual_active = TRUE;
+    log_info("Manual freq: cluster %s (%d) = %" G_GINT64_FORMAT " Hz (%.2f MHz)",
+             cluster == -1 ? "GPU" : "CPU", cluster, freq_hz, freq_hz / 1e6);
+    return TRUE;
+}
+
+gint64 dbus_manager_get_manual_freq(const DbusManager *mgr, int cluster) {
+    if (!mgr) return 0;
+    if (cluster < -1 || cluster > 3) return 0;
+    return mgr->manual_freq[cluster + 1];
 }

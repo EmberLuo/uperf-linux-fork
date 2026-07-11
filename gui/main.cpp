@@ -14,6 +14,7 @@ class ModeProxy : public QObject {
     Q_PROPERTY(QString currentMode READ currentMode NOTIFY currentModeChanged)
     Q_PROPERTY(QString currentScene READ currentScene NOTIFY currentSceneChanged)
     Q_PROPERTY(QVariantList frequencies READ frequencies NOTIFY frequenciesChanged)
+    Q_PROPERTY(QVariantList currentFreqs READ frequencies NOTIFY frequenciesChanged)
     Q_PROPERTY(QVariantList loads READ loads NOTIFY loadsChanged)
     Q_PROPERTY(bool isHeavyLoad READ isHeavyLoad NOTIFY isHeavyLoadChanged)
     Q_PROPERTY(int maxTemp READ maxTemp NOTIFY maxTempChanged)
@@ -215,6 +216,35 @@ private slots:
         } else {
             qDebug() << "[ModeProxy] Settings applied";
         }
+    }
+
+    Q_INVOKABLE void applyFreqOverride(
+        qint64 primeFreq, qint64 perfFreq, qint64 effFreq, qint64 gpuFreq)
+    {
+        QDBusInterface iface("org.uperflinux.Daemon",
+                             "/org/uperflinux/Daemon",
+                             "org.uperflinux.Daemon",
+                             QDBusConnection::systemBus());
+        // cluster: 0=Prime, 1=Perf, 2=Eff, -1=GPU
+        iface.call("SetManualFreq", 0, primeFreq);
+        iface.call("SetManualFreq", 1, perfFreq);
+        iface.call("SetManualFreq", 2, effFreq);
+        iface.call("SetManualFreq", -1, gpuFreq);
+        qDebug() << "[ModeProxy] Freq override applied:" << primeFreq << perfFreq << effFreq << gpuFreq;
+    }
+
+    Q_INVOKABLE void releaseFreqOverride()
+    {
+        QDBusInterface iface("org.uperflinux.Daemon",
+                             "/org/uperflinux/Daemon",
+                             "org.uperflinux.Daemon",
+                             QDBusConnection::systemBus());
+        // freq_hz=0 releases the override
+        iface.call("SetManualFreq", 0, qint64(0));
+        iface.call("SetManualFreq", 1, qint64(0));
+        iface.call("SetManualFreq", 2, qint64(0));
+        iface.call("SetManualFreq", -1, qint64(0));
+        qDebug() << "[ModeProxy] Freq overrides released";
     }
 
 signals:

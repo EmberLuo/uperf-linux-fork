@@ -217,4 +217,5 @@ the Free Software Foundation, either version 3 of the License, or
 - [x] Unit tests (75 tests across 5 test files)
 - [x] Thermal awareness (read /sys/class/thermal/, frequency capping, DBus exposure)
 - [x] Per-app power mode auto-switching (perapp_powermode parser, game scanner integration, GUI wiring)
-- [x] Config generation wizard for new SoCs (uperf-wizard detect, uperfctl detect)
+- [x] Config generation wizard for new SoCs
+- [x] Manual CPU/GPU frequency override (CLI + GUI + DBus) (uperf-wizard detect, uperfctl detect)

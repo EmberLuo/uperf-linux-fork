@@ -22,22 +22,27 @@ ApplicationWindow {
         TabButton {
             text: "\u{1F3E0}\nDashboard"
             font.pixelSize: 16
-            width: tabBar.width / 4
+            width: tabBar.width / 5
         }
         TabButton {
             text: "\u{1F3AE}\nGames"
             font.pixelSize: 16
-            width: tabBar.width / 4
+            width: tabBar.width / 5
         }
         TabButton {
             text: "\u{1F6E0}\nSettings"
             font.pixelSize: 16
-            width: tabBar.width / 4
+            width: tabBar.width / 5
         }
         TabButton {
             text: "\u{1F4CB}\nLogs"
             font.pixelSize: 16
-            width: tabBar.width / 4
+            width: tabBar.width / 5
+        }
+        TabButton {
+            text: "\u{1F3A1}\nFreq"
+            font.pixelSize: 16
+            width: tabBar.width / 5
         }
     }
 
@@ -50,5 +55,6 @@ ApplicationWindow {
         GamesPage { }
         SettingsPage { }
         LogsPage { }
+        FrequencyPage { }
     }
 }

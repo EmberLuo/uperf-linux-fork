@@ -23,6 +23,10 @@ static void print_usage(const char *prog) {
         "  log-level <n>       Set log level (0=debug..4=fatal)\n"
         "  detect              Scan hardware and print baseline JSON config\n"
         "  calibrate           Run power model calibration (TODO)\n"
+        "  set-freq <cluster> <freq_hz>\n"
+        "                      Manually set CPU/GPU frequency\n"
+        "                      cluster: -1=GPU, 0=Prime, 1=Perf, 2=Eff\n"
+        "                      freq_hz: target in Hz (0 = release override)\n"
         "  help                Show this help\n",
         prog);
 }
@@ -217,6 +221,105 @@ int main(int argc, char *argv[]) {
     if (strcmp(cmd, "calibrate") == 0) {
         fprintf(stderr, "Calibration not yet implemented. Use uperf-wizard calibrate.\n");
         return 1;
+    }
+
+    if (strcmp(cmd, "set-freq") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Error: set-freq requires <cluster> and <freq_hz>\n");
+            fprintf(stderr, "Usage: %s set-freq <cluster> <freq_hz>\n", argv[0]);
+            fprintf(stderr, "  cluster: -1=GPU, 0=Prime, 1=Perf, 2=Eff\n");
+            fprintf(stderr, "  freq_hz: target frequency in Hz (0 = release override)\n");
+            return 1;
+        }
+        int cluster = atoi(argv[2]);
+        long long freq_hz = atoll(argv[3]);
+        if (cluster < -1 || cluster > 2) {
+            fprintf(stderr, "Error: invalid cluster %d (must be -1..2)\n", cluster);
+            return 1;
+        }
+        if (freq_hz < 0) {
+            fprintf(stderr, "Error: frequency must be >= 0\n");
+            return 1;
+        }
+
+        /* Direct sysfs write (no Qt/DBus dependency for CLI) */
+        char path[MAX_PATH_LEN];
+        char value[32];
+        snprintf(value, sizeof(value), "%lld", freq_hz);
+
+        FILE *fp = NULL;
+        snprintf(value, sizeof(value), "%lld", freq_hz);
+
+        if (cluster == -1) {
+            /* GPU: try common devfreq paths */
+            const char *gpu_paths[] = {
+                "/sys/class/devfreq/soc:qcom:gpu/max_freq",
+                "/sys/class/devfreq/soc\:qcom\:gpu/max_freq",
+                NULL
+            };
+            int found = 0;
+            for (int p = 0; gpu_paths[p]; p++) {
+                snprintf(path, sizeof(path), "%s", gpu_paths[p]);
+                fp = fopen(path, "w");
+                if (fp) { found = 1; break; }
+            }
+            if (!found) {
+                fprintf(stderr, "Error: GPU devfreq node not found\n");
+                return 1;
+            }
+        } else {
+            /* CPU: write to cpufreq scaling_max_freq */
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq",
+                     cluster);
+        }
+
+        FILE *fp = fopen(path, "w");
+        if (!fp) {
+            fprintf(stderr, "Error: cannot write to %s: %s\n", path, strerror(errno));
+            fprintf(stderr, "Hint: run as root\n");
+            return 1;
+        }
+        fprintf(fp, "%s", value);
+        fclose(fp);
+
+        printf("Manual frequency set: cluster=%s(%d) = %s Hz\n",
+               cluster == -1 ? "GPU" : "CPU", cluster, value);
+        return 0;
+    }
+
+    if (strcmp(cmd, "show-freqs") == 0) {
+        printf("Current CPU frequencies:\n");
+        for (int cpu = 0; cpu < 8; cpu++) {
+            char path[MAX_PATH_LEN];
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+            FILE *f = fopen(path, "r");
+            if (f) {
+                long long freq;
+                if (fscanf(f, "%lld", &freq) == 1)
+                    printf("  cpu%d: %lld Hz (%.2f MHz)\n", cpu, freq, freq / 1e6);
+                fclose(f);
+            }
+        }
+
+        printf("\nGPU frequency:\n");
+        char gpu_path[MAX_PATH_LEN];
+        snprintf(gpu_path, sizeof(gpu_path),
+                 "/sys/class/devfreq/soc:qcom:gpu/msm_dvfsc_score");
+        /* Try cur_freq first */
+        snprintf(gpu_path, sizeof(gpu_path),
+                 "/sys/class/devfreq/soc:qcom:gpu/cur_freq");
+        FILE *f = fopen(gpu_path, "r");
+        if (f) {
+            long long freq;
+            if (fscanf(f, "%lld", &freq) == 1)
+                printf("  GPU: %lld Hz (%.2f MHz)\n", freq, freq / 1e6);
+            fclose(f);
+        } else {
+            printf("  GPU: (cannot read — devfreq node not found)\n");
+        }
+        return 0;
     }
 
     fprintf(stderr, "Unknown command: %s\n", cmd);

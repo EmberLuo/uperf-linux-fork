@@ -213,3 +213,4 @@ journalctl -u uperf-linux -f
 - [x] 热管理（读取 /sys/class/thermal/，频率限制，DBus 暴露）
 - [x] 按应用电源模式自动切换（perapp_powermode 解析器，游戏扫描器集成，GUI 接线）
 - [x] SoC 配置向导（uperf-wizard detect，uperfctl detect）
+- [x] 手动 CPU/GPU 频率覆盖（CLI + GUI + DBus）
