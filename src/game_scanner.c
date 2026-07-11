@@ -1,4 +1,5 @@
 #include "game_scanner.h"
+#include "perapp_config.h"
 #include "log.h"
 
 #include <stdio.h>
@@ -35,6 +36,9 @@ struct GameScanner {
     const char **custom_patterns;
     int nr_custom_patterns;
     int custom_patterns_cap;
+
+    /* Per-app mode config */
+    PerAppConfig perapp;
 };
 
 GameScanner *game_scanner_new(void) {
@@ -54,6 +58,7 @@ GameScanner *game_scanner_new(void) {
 void game_scanner_free(GameScanner *gs) {
     if (!gs) return;
     free(gs->custom_patterns);
+    perapp_free(&gs->perapp);
     log_debug("GameScanner destroyed (found %d processes)", gs->nr_processes);
     free(gs);
 }
@@ -159,6 +164,15 @@ int game_scanner_scan(GameScanner *gs) {
             strncpy(gp->package, cmdline, sizeof(gp->package) - 1);
             gp->package[sizeof(gp->package) - 1] = '\0';
 
+            /* Assign per-app mode if rules are loaded */
+            if (gs->perapp.nr_rules > 0) {
+                PowerMode pm = perapp_lookup(&gs->perapp, comm);
+                const char *mode_names[] = {"balance", "powersave", "performance", "fast", "balance"};
+                strncpy(gp->package, mode_names[pm], sizeof(gp->package) - 1);
+                log_debug("game_scanner: PID=%d comm='%s' → mode=%s",
+                          pid, comm, mode_names[pm]);
+            }
+
             gs->nr_processes++;
             log_debug("game_scanner: found game PID=%d comm=%s cmdline=%s",
                       pid, comm, cmdline);
@@ -179,4 +193,20 @@ int game_scanner_get_results(GameScanner *gs, GameProcess *out, int max_entries)
 
     memcpy(out, gs->processes, count * sizeof(GameProcess));
     return count;
+}
+
+int game_scanner_perapp_scan(GameScanner *gs, const char *perapp_file) {
+    if (!gs || !perapp_file) return -1;
+    return perapp_load(&gs->perapp, perapp_file);
+}
+
+const char *game_scanner_get_app_mode(const GameScanner *gs, const char *comm) {
+    if (!gs || !comm || gs->perapp.nr_rules == 0)
+        return "balance";
+
+    PowerMode pm = perapp_lookup(&gs->perapp, comm);
+    const char *mode_names[] = {"balance", "powersave", "performance", "fast"};
+    if (pm >= 0 && pm < 4)
+        return mode_names[pm];
+    return "balance";
 }

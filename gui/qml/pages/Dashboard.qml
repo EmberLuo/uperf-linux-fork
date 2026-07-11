@@ -42,7 +42,7 @@ Page {
                 PowerModeButton {
                     label: "Balance"
                     icon: "\u{1F7E2}"
-                    active: currentMode === "balance"
+                    active: root.modeProxy.currentMode === "balance"
                     onClicked: root.modeProxy.setMode("balance")
                     Layout.fillWidth: true
                 }
@@ -50,7 +50,7 @@ Page {
                 PowerModeButton {
                     label: "Powersave"
                     icon: "\u{1F50B}"
-                    active: currentMode === "powersave"
+                    active: root.modeProxy.currentMode === "powersave"
                     onClicked: root.modeProxy.setMode("powersave")
                     Layout.fillWidth: true
                 }
@@ -58,7 +58,7 @@ Page {
                 PowerModeButton {
                     label: "Performance"
                     icon: "\u{1F525}"
-                    active: currentMode === "performance"
+                    active: root.modeProxy.currentMode === "performance"
                     onClicked: root.modeProxy.setMode("performance")
                     Layout.fillWidth: true
                 }
@@ -219,6 +219,78 @@ Page {
                             anchors.horizontalCenter: parent.horizontalCenter
                         }
                     }
+                }
+            }
+        }
+
+        // Thermal zones
+        GroupBox {
+            title: "Thermal Zones"
+            Layout.fillWidth: true
+            Layout.preferredHeight: 160
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 16
+                spacing: 8
+
+                Repeater {
+                    model: 4  /* Up to 4 thermal zones */
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 36
+                        radius: 8
+                        color: "#16213e"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 12
+
+                            Label {
+                                text: "Zone " + (modelIndex + 1)
+                                color: "#a0a0b0"
+                                font.pixelSize: 14
+                                Layout.fillWidth: true
+                            }
+
+                            Label {
+                                text: root.modeProxy.maxTemp > 0 ?
+                                    (root.modeProxy.maxTemp / 1000) + "." +
+                                    String(root.modeProxy.maxTemp % 1000).padStart(3, '0') + "°C" :
+                                    "--°C"
+                                font.pixelSize: 16
+                                font.bold: true
+                                color: {
+                                    var temp = root.modeProxy.maxTemp / 1000;
+                                    if (temp >= 80) return "#ff6b6b";
+                                    if (temp >= 70) return "#ffa500";
+                                    return "#4ecca3";
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.preferredWidth: 60
+                                Layout.preferredHeight: 8
+                                radius: 4
+                                color: {
+                                    var temp = root.modeProxy.maxTemp / 1000;
+                                    if (temp >= 80) return "#ff6b6b";
+                                    if (temp >= 70) return "#ffa500";
+                                    return "#4ecca3";
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Label {
+                    text: "Thermal state: " + (root.modeProxy.thermalState || "NORMAL")
+                    font.pixelSize: 14
+                    color: root.modeProxy.thermalState === "CRITICAL" ? "#ff6b6b" :
+                          root.modeProxy.thermalState === "THROTTLED" ? "#ffa500" :
+                          root.modeProxy.thermalState === "WARNING" ? "#ffd700" : "#4ecca3"
+                    Layout.alignment: Qt.AlignHCenter
                 }
             }
         }

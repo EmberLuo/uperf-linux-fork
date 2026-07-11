@@ -34,6 +34,7 @@ Page {
                 anchors.margins: 16
 
                 SliderWithLabel {
+                    id: heavyLoadThd
                     label: "HeavyLoad Threshold"
                     value: 60
                     min: 20; max: 90
@@ -41,6 +42,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: idleLoadThd
                     label: "Idle Load Threshold"
                     value: 20
                     min: 5; max: 50
@@ -48,6 +50,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: sampleTime
                     label: "Sample Time"
                     value: 10
                     min: 5; max: 100
@@ -56,6 +59,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: burstSlack
                     label: "Burst Slack"
                     value: 3000
                     min: 500; max: 10000
@@ -76,6 +80,7 @@ Page {
                 anchors.margins: 16
 
                 SliderWithLabel {
+                    id: latencyTime
                     label: "Latency Time"
                     value: 200
                     min: 0; max: 800
@@ -84,6 +89,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: margin
                     label: "Margin"
                     value: 25
                     min: 0; max: 80
@@ -92,6 +98,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: burst
                     label: "Burst"
                     value: 0
                     min: 0; max: 100
@@ -112,6 +119,7 @@ Page {
                 anchors.margins: 16
 
                 SliderWithLabel {
+                    id: slowLimit
                     label: "Slow Limit"
                     value: 3.0
                     min: 0.5; max: 20.0
@@ -121,6 +129,7 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: fastLimit
                     label: "Fast Limit"
                     value: 6.0
                     min: 1.0; max: 50.0
@@ -130,11 +139,60 @@ Page {
                 }
 
                 SliderWithLabel {
+                    id: fastLimitCap
                     label: "Fast Limit Capacity"
                     value: 10.0
                     min: 1.0; max: 100.0
                     decimals: 1
                     tooltip: "Maximum capacity cap during burst"
+                }
+            }
+        }
+
+        // Section: Thermal
+        GroupBox {
+            title: "Thermal Thresholds"
+            Layout.fillWidth: true
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 16
+                anchors.margins: 16
+
+                SliderWithLabel {
+                    id: warnTemp
+                    label: "Warn Temp"
+                    value: 70
+                    min: 50; max: 90
+                    suffix: "°C"
+                    tooltip: "Temperature at which warnings are logged"
+                }
+
+                SliderWithLabel {
+                    id: throttleTemp
+                    label: "Throttle Temp"
+                    value: 80
+                    min: 60; max: 95
+                    suffix: "°C"
+                    tooltip: "Temperature at which CPU/GPU frequency is reduced"
+                }
+
+                SliderWithLabel {
+                    id: criticalTemp
+                    label: "Critical Temp"
+                    value: 95
+                    min: 80; max: 110
+                    suffix: "°C"
+                    tooltip: "Emergency threshold — maximum performance reduction"
+                }
+
+                SliderWithLabel {
+                    id: recoveryTemp
+                    label: "Recovery Temp"
+                    value: 75
+                    min: 50; max: 90
+                    suffix: "°C"
+                    tooltip: "Temperature below which normal operation resumes"
                 }
             }
         }
@@ -160,7 +218,23 @@ Page {
                 color: parent.hovered ? "#e94560" : "#4ecca3"
             }
             onClicked: {
-                // TODO: send settings via DBus
+                // Send settings via DBus
+                root.modeProxy.applySettings(
+                    heavyLoadThd.value,
+                    idleLoadThd.value,
+                    sampleTime.value,
+                    burstSlack.value,
+                    latencyTime.value,
+                    margin.value,
+                    burst.value,
+                    slowLimit.value,
+                    fastLimit.value,
+                    fastLimitCap.value,
+                    warnTemp.value,
+                    throttleTemp.value,
+                    criticalTemp.value,
+                    recoveryTemp.value
+                )
                 statusMsg.text = "Settings applied!"
                 statusMsg.color = "#4ecca3"
             }

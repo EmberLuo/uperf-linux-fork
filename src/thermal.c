@@ -1,0 +1,294 @@
+#define _GNU_SOURCE
+#include "thermal.h"
+#include "log.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
+/* Internal thermal manager state */
+struct ThermalManager {
+    ThermalPolicy policy;
+    ThermalZone zones[THERMAL_MAX_ZONES];
+    int nr_zones;
+    ThermalState current_state;
+    int max_temp;
+};
+
+/* Read a single line from a file, stripping newline */
+static int read_line(const char *path, char *buf, size_t len) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return -1;
+
+    if (!fgets(buf, (int)len, fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+
+    /* Strip trailing newline */
+    size_t n = strlen(buf);
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r'))
+        buf[--n] = '\0';
+    return 0;
+}
+
+/* Determine the type of a thermal zone from its type string */
+static ThermalZoneType classify_zone(const char *type) {
+    if (!type) return THERMAL_ZONE_UNKNOWN;
+
+    if (strstr(type, "cpu") || strstr(type, "thermal"))
+        return THERMAL_ZONE_CPU;
+    if (strstr(type, "gpu"))
+        return THERMAL_ZONE_GPU;
+    if (strstr(type, "soc") || strstr(type, "chip"))
+        return THERMAL_ZONE_SOC;
+    if (strstr(type, "battery") || strstr(type, "batt"))
+        return THERMAL_ZONE_BATTERY;
+    if (strstr(type, "board") || strstr(type, "pmbus"))
+        return THERMAL_ZONE_BOARD;
+
+    return THERMAL_ZONE_UNKNOWN;
+}
+
+ThermalManager *thermal_manager_new(const ThermalPolicy *policy) {
+    ThermalManager *tm = calloc(1, sizeof(*tm));
+    if (!tm) return NULL;
+
+    if (policy) {
+        tm->policy = *policy;
+    } else {
+        tm->policy = thermal_default_policy();
+    }
+
+    tm->nr_zones = 0;
+    tm->current_state = THERMAL_NORMAL;
+    tm->max_temp = 0;
+
+    log_info("ThermalManager created: warn=%d throttle=%d critical=%d recovery=%d",
+             tm->policy.warn_temp, tm->policy.throttle_temp,
+             tm->policy.critical_temp, tm->policy.recovery_temp);
+    return tm;
+}
+
+void thermal_manager_free(ThermalManager *tm) {
+    if (!tm) return;
+    log_debug("ThermalManager destroyed (%d zones)", tm->nr_zones);
+    free(tm);
+}
+
+int thermal_manager_discover_zones(ThermalManager *tm) {
+    if (!tm) return -1;
+
+    DIR *dir = opendir("/sys/class/thermal/thermal_zone0");
+    if (!dir) {
+        log_warn("thermal: no thermal zones found (not running on kernel with thermal framework)");
+        return 0;
+    }
+    closedir(dir);
+
+    tm->nr_zones = 0;
+
+    /* Scan /sys/class/thermal/thermal_zoneN/ */
+    DIR *thermal_dir = opendir("/sys/class/thermal");
+    if (!thermal_dir) {
+        log_error("thermal: cannot open /sys/class/thermal: %s", strerror(errno));
+        return -1;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(thermal_dir)) != NULL && tm->nr_zones < THERMAL_MAX_ZONES) {
+        /* Only process directories named thermal_zoneN */
+        if (strncmp(ent->d_name, "thermal_zone", 12) != 0)
+            continue;
+
+        char *endptr;
+        long zone_num = strtol(ent->d_name + 12, &endptr, 10);
+        if (*endptr != '\0') continue;  /* Not a valid number */
+
+        /* Build paths */
+        char type_path[MAX_PATH_LEN];
+        char temp_path[MAX_PATH_LEN];
+        char name_path[MAX_PATH_LEN];
+        snprintf(type_path, sizeof(type_path), "/sys/class/thermal/thermal_zone%d/type", (int)zone_num);
+        snprintf(temp_path, sizeof(temp_path), "/sys/class/thermal/thermal_zone%d/temp", (int)zone_num);
+        snprintf(name_path, sizeof(name_path), "/sys/class/thermal/thermal_zone%d/name", (int)zone_num);
+
+        /* Read zone type */
+        char type_str[THERMAL_NAME_LEN] = {0};
+        if (read_line(type_path, type_str, sizeof(type_str)) < 0)
+            continue;  /* Skip unreadable zones */
+
+        /* Read zone name */
+        char name_str[THERMAL_NAME_LEN] = {0};
+        read_line(name_path, name_str, sizeof(name_str));
+
+        /* Read temperature */
+        char temp_str[32] = {0};
+        int temp_milli = 0;
+        if (read_line(temp_path, temp_str, sizeof(temp_str)) == 0) {
+            temp_milli = atoi(temp_str);
+        }
+
+        /* Store zone info */
+        ThermalZone *zone = &tm->zones[tm->nr_zones];
+        zone->id = (int)zone_num;
+        strncpy(zone->name, name_str, THERMAL_NAME_LEN - 1);
+        strncpy(zone->type, type_str, THERMAL_NAME_LEN - 1);
+        zone->temp_millidegC = temp_milli;
+        zone->zone_type = classify_zone(type_str);
+        zone->valid = true;
+
+        log_debug("thermal: zone[%d] %s (%s) = %d.%03d°C",
+                   zone->id, zone->name, zone->type,
+                   temp_milli / 1000, temp_milli % 1000);
+
+        tm->nr_zones++;
+    }
+
+    closedir(thermal_dir);
+    log_info("thermal: discovered %d thermal zone(s)", tm->nr_zones);
+    return tm->nr_zones;
+}
+
+ThermalState thermal_manager_update(ThermalManager *tm) {
+    if (!tm || tm->nr_zones == 0) return THERMAL_NORMAL;
+
+    tm->max_temp = 0;
+    ThermalState state = THERMAL_NORMAL;
+
+    for (int i = 0; i < tm->nr_zones; i++) {
+        ThermalZone *zone = &tm->zones[i];
+
+        /* Re-read temperature */
+        char temp_path[MAX_PATH_LEN];
+        snprintf(temp_path, sizeof(temp_path),
+                 "/sys/class/thermal/thermal_zone%d/temp", zone->id);
+        char temp_str[32];
+        if (read_line(temp_path, temp_str, sizeof(temp_str)) == 0) {
+            zone->temp_millidegC = atoi(temp_str);
+        }
+
+        if (zone->temp_millidegC > tm->max_temp)
+            tm->max_temp = zone->temp_millidegC;
+
+        /* Check thresholds */
+        if (zone->temp_millidegC >= tm->policy.critical_temp) {
+            state = THERMAL_CRITICAL;
+        } else if (zone->temp_millidegC >= tm->policy.throttle_temp) {
+            if (state < THERMAL_THROTTLED)
+                state = THERMAL_THROTTLED;
+        } else if (zone->temp_millidegC >= tm->policy.warn_temp) {
+            if (state < THERMAL_WARNING)
+                state = THERMAL_WARNING;
+        }
+    }
+
+    /* Log state changes */
+    if (state != tm->current_state) {
+        log_info("Thermal state changed: %s → %s (%d°C max)",
+                 thermal_state_to_string(tm->current_state),
+                 thermal_state_to_string(state),
+                 tm->max_temp / 1000);
+    }
+
+    tm->current_state = state;
+    return state;
+}
+
+int thermal_manager_zone_count(const ThermalManager *tm) {
+    return tm ? tm->nr_zones : 0;
+}
+
+const ThermalZone *thermal_manager_get_zone(const ThermalManager *tm, int index) {
+    if (!tm || index < 0 || index >= tm->nr_zones) return NULL;
+    return &tm->zones[index];
+}
+
+int thermal_manager_get_max_temp(const ThermalManager *tm) {
+    return tm ? tm->max_temp : 0;
+}
+
+ThermalState thermal_manager_get_state(const ThermalManager *tm) {
+    return tm ? tm->current_state : THERMAL_NORMAL;
+}
+
+float thermal_manager_get_reduction_factor(const ThermalManager *tm) {
+    if (!tm) return 0.0f;
+
+    switch (tm->current_state) {
+        case THERMAL_NORMAL:
+            return 0.0f;  /* No reduction needed */
+
+        case THERMAL_WARNING:
+            /* Mild reduction: reduce target frequency by 10-20% */
+            return 0.15f;
+
+        case THERMAL_THROTTLED:
+            /* Significant reduction: reduce by 30-50% */
+            /* Scale based on how far above throttle_temp we are */
+            if (tm->max_temp >= tm->policy.critical_temp - 5000) {
+                return 0.5f;  /* Near critical — aggressive reduction */
+            }
+            return 0.3f;
+
+        case THERMAL_CRITICAL:
+            /* Emergency: reduce to minimum, may need to kill processes */
+            return 0.8f;
+
+        default:
+            return 0.0f;
+    }
+}
+
+bool thermal_manager_has_zone_type(const ThermalManager *tm, ThermalZoneType type) {
+    if (!tm) return false;
+    for (int i = 0; i < tm->nr_zones; i++) {
+        if (tm->zones[i].zone_type == type)
+            return true;
+    }
+    return false;
+}
+
+int thermal_manager_find_zone_by_type(const ThermalManager *tm, ThermalZoneType type) {
+    if (!tm) return -1;
+    for (int i = 0; i < tm->nr_zones; i++) {
+        if (tm->zones[i].zone_type == type)
+            return i;
+    }
+    return -1;
+}
+
+const char *thermal_state_to_string(ThermalState state) {
+    switch (state) {
+        case THERMAL_NORMAL:     return "NORMAL";
+        case THERMAL_WARNING:    return "WARNING";
+        case THERMAL_THROTTLED:  return "THROTTLED";
+        case THERMAL_CRITICAL:   return "CRITICAL";
+        default:                 return "UNKNOWN";
+    }
+}
+
+ThermalPolicy thermal_default_policy(void) {
+    /* SM8550 / Snapdragon 8 Gen 2 typical thermal thresholds */
+    ThermalPolicy policy = {0};
+    policy.warn_temp       = 70000;   /* 70°C */
+    policy.throttle_temp   = 80000;   /* 80°C */
+    policy.critical_temp   = 95000;   /* 95°C */
+    policy.recovery_temp   = 75000;   /* 75°C */
+    return policy;
+}
+
+ThermalPolicy thermal_conservative_policy(void) {
+    /* More conservative thresholds for battery-powered devices */
+    ThermalPolicy policy = {0};
+    policy.warn_temp       = 60000;   /* 60°C */
+    policy.throttle_temp   = 70000;   /* 70°C */
+    policy.critical_temp   = 85000;   /* 85°C */
+    policy.recovery_temp   = 65000;   /* 65°C */
+    return policy;
+}

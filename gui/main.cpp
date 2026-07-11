@@ -16,6 +16,8 @@ class ModeProxy : public QObject {
     Q_PROPERTY(QVariantList frequencies READ frequencies NOTIFY frequenciesChanged)
     Q_PROPERTY(QVariantList loads READ loads NOTIFY loadsChanged)
     Q_PROPERTY(bool isHeavyLoad READ isHeavyLoad NOTIFY isHeavyLoadChanged)
+    Q_PROPERTY(int maxTemp READ maxTemp NOTIFY maxTempChanged)
+    Q_PROPERTY(QString thermalState READ thermalState NOTIFY thermalStateChanged)
 
 public:
     explicit ModeProxy(QObject *parent = nullptr)
@@ -23,6 +25,8 @@ public:
         , m_currentMode("balance")
         , m_currentScene("idle")
         , m_isHeavyLoad(false)
+        , m_maxTemp(0)
+        , m_thermalState("normal")
     {
         m_bus = QDBusConnection::systemBus();
         if (!m_bus.isConnected()) {
@@ -56,6 +60,11 @@ public:
                       "org.uperflinux.Daemon",
                       "HeavyLoadStateChanged",
                       this, SLOT(onHeavyLoadChanged(QVariantList)));
+        m_bus.connect("org.uperflinux.Daemon",
+                      "/org/uperflinux/Daemon",
+                      "org.uperflinux.Daemon",
+                      "StatsUpdated",
+                      this, SLOT(onThermalUpdated(QVariantList)));
     }
 
     QString currentMode() const { return m_currentMode; }
@@ -63,6 +72,8 @@ public:
     QVariantList frequencies() const { return m_frequencies; }
     QVariantList loads() const { return m_loads; }
     bool isHeavyLoad() const { return m_isHeavyLoad; }
+    int maxTemp() const { return m_maxTemp; }
+    QString thermalState() const { return m_thermalState; }
 
     Q_INVOKABLE void setMode(const QString &mode) {
         QDBusInterface iface("org.uperflinux.Daemon",
@@ -113,6 +124,18 @@ public slots:
             m_isHeavyLoad = heavyReply.value();
             emit isHeavyLoadChanged();
         }
+
+        QDBusReply<int> tempReply = iface.call("GetCurrentMaxTemp");
+        if (tempReply.isValid() && tempReply.value() != m_maxTemp) {
+            m_maxTemp = tempReply.value();
+            emit maxTempChanged();
+        }
+
+        QDBusReply<QString> thermalReply = iface.call("GetCurrentThermalState");
+        if (thermalReply.isValid() && thermalReply.value() != m_thermalState) {
+            m_thermalState = thermalReply.value();
+            emit thermalStateChanged();
+        }
     }
 
 private slots:
@@ -146,12 +169,67 @@ private slots:
         }
     }
 
+    void onThermalUpdated(const QVariantList &args) {
+        if (args.size() >= 2) {
+            m_maxTemp = args[0].toInt();
+            m_thermalState = args[1].toString();
+            emit maxTempChanged();
+            emit thermalStateChanged();
+        }
+    }
+
+    Q_INVOKABLE void setAppMode(const QString &app, int modeIndex) {
+        QStringList modes{"balance", "powersave", "performance"};
+        if (modeIndex < 0 || modeIndex >= modes.size()) return;
+        QString mode = modes[modeIndex];
+
+        QDBusInterface iface("org.uperflinux.Daemon",
+                             "/org/uperflinux/Daemon",
+                             "org.uperflinux.Daemon",
+                             QDBusConnection::systemBus());
+        QDBusReply<bool> reply = iface.call("SetGameMode", 0, app, mode);
+        if (!reply.isValid()) {
+            qWarning() << "[ModeProxy] SetGameMode failed:" << reply.error().message();
+        } else {
+            qDebug() << "[ModeProxy] Per-app mode set:" << app << "=" << mode;
+        }
+    }
+
+    Q_INVOKABLE void applySettings(
+        double heavyLoadThd, double idleLoadThd,
+        double sampleTime, double burstSlack,
+        double latencyTime, double margin, double burst,
+        double slowLimit, double fastLimit, double fastLimitCap,
+        double warnTemp, double throttleTemp,
+        double criticalTemp, double recoveryTemp)
+    {
+        QDBusInterface iface("org.uperflinux.Daemon",
+                             "/org/uperflinux/Daemon",
+                             "org.uperflinux.Daemon",
+                             QDBusConnection::systemBus());
+        QDBusReply<bool> reply = iface.call(
+            "ApplySettings",
+            heavyLoadThd, idleLoadThd,
+            sampleTime, burstSlack,
+            latencyTime, margin, burst,
+            slowLimit, fastLimit, fastLimitCap,
+            warnTemp, throttleTemp,
+            criticalTemp, recoveryTemp);
+        if (!reply.isValid()) {
+            qWarning() << "[ModeProxy] ApplySettings failed:" << reply.error().message();
+        } else {
+            qDebug() << "[ModeProxy] Settings applied";
+        }
+    }
+
 signals:
     void currentModeChanged();
     void currentSceneChanged();
     void frequenciesChanged();
     void loadsChanged();
     void isHeavyLoadChanged();
+    void maxTempChanged();
+    void thermalStateChanged();
 
 private:
     QDBusConnection m_bus;
@@ -161,6 +239,8 @@ private:
     QVariantList m_frequencies;
     QVariantList m_loads;
     bool m_isHeavyLoad;
+    int m_maxTemp;
+    QString m_thermalState;
 };
 
 #include "main.moc"

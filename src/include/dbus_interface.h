@@ -3,6 +3,7 @@
 
 #include <glib.h>
 #include <glib-object.h>
+#include <sys/types.h>
 
 /* Maximum number of clusters and CPUs tracked */
 #define DBUS_MAX_CLUSTERS  8
@@ -81,5 +82,13 @@ typedef void (*DbusSetModeFunc)(const char *mode, void *user_data);
 void dbus_manager_set_mode_handler(DbusManager *mgr,
                                     DbusSetModeFunc callback,
                                     void *user_data);
+
+/* Update thermal state information. */
+void dbus_manager_set_thermal_state(DbusManager *mgr, int max_temp_millidegC,
+                                     const char *state_str);
+
+/* Set per-app mode for a detected game process. */
+void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_name,
+                                 const char *mode);
 
 #endif /* UPERF_DBUS_INTERFACE_H */

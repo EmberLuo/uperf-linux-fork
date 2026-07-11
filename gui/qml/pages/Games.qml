@@ -93,7 +93,7 @@ Page {
                             return 0
                         }
                         onActivated: {
-                            // TODO: update per-app mode via DBus
+                            root.modeProxy.setAppMode(model.comm, currentIndex)
                         }
                     }
                 }

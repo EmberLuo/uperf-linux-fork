@@ -3,6 +3,14 @@
 
 #include <string.h>
 #include <math.h>
+#include <time.h>
+
+/* Helper: monotonic time in milliseconds */
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+}
 
 /* Internal state machine implementation */
 struct StateMachine {
@@ -16,9 +24,6 @@ struct StateMachine {
     /* Config reference */
     const Config *cfg;
 
-    /* Per-mode, per-scene action parameters */
-    ActionParams actions[MODE_NUM][SCENE_NUM_STATES];
-
     /* Hint durations (seconds) */
     float hint_duration[SCENE_NUM_STATES];
 
@@ -31,6 +36,9 @@ struct StateMachine {
     float current_load;
     float load_history[16];
     int   load_hist_idx;
+
+    /* Thermal reduction (0.0 = none, 1.0 = max reduction) */
+    float thermal_reduction;
 };
 
 /* Map SceneState to actions array index */
@@ -53,11 +61,13 @@ StateMachine *state_machine_new(const Config *cfg) {
     sm->cfg = cfg;
     sm->current_scene = SCENE_IDLE;
     sm->current_mode = MODE_BALANCE;
+    sm->enter_time_ms = now_ms();
     sm->heavy_load_active = false;
     sm->last_boost_exit_ms = 0;
     sm->request_burst_slack_ms = 3000.0f;
     sm->load_hist_idx = 0;
     memset(sm->load_history, 0, sizeof(sm->load_history));
+    sm->thermal_reduction = 0.0f;
 
     /* Copy hint durations from config */
     for (int i = 0; i < SCENE_NUM_STATES; i++) {
@@ -84,12 +94,40 @@ void state_machine_free(StateMachine *sm) {
 }
 
 void state_machine_tick(StateMachine *sm) {
-    uint64_t now_ms = (uint64_t)sm->hint_duration[0];  /* Placeholder */
-    (void)now_ms;
+    uint64_t now_ms_val = now_ms();
+    uint64_t elapsed = now_ms_val - sm->enter_time_ms;
 
-    /* Check hint duration timeouts */
-    /* In a full implementation, we'd compare now_ms against enter_time_ms
-     * and transition if exceeded. For now, this is a no-op stub. */
+    /* Check hint duration timeouts for current scene */
+    float hint = sm->hint_duration[sm->current_scene];
+    if (hint > 0.0f && elapsed >= (uint64_t)(hint * 1000.0f)) {
+        /* Transition based on current scene */
+        SceneState next = sm->current_scene;
+
+        switch (sm->current_scene) {
+            case SCENE_TOUCH:
+                next = SCENE_IDLE;
+                break;
+            case SCENE_TRIGGER:
+            case SCENE_JUNK:
+                next = SCENE_TOUCH;
+                break;
+            case SCENE_GESTURE:
+                next = SCENE_TOUCH;
+                break;
+            case SCENE_SWITCH:
+                next = SCENE_TOUCH;
+                break;
+            default:
+                break;
+        }
+
+        if (next != sm->current_scene) {
+            log_debug("Timeout transition: %d -> %d (elapsed %.0f ms, hint %.1f s)",
+                      sm->current_scene, next, (double)elapsed, hint);
+            sm->current_scene = next;
+            sm->enter_time_ms = now_ms_val;
+        }
+    }
 }
 
 SceneState state_machine_feed_event(StateMachine *sm, EventType evt) {
@@ -255,4 +293,22 @@ bool state_machine_needs_boost(const StateMachine *sm, float current_load,
     }
 
     return current_load > heavy_load_threshold;
+}
+
+void state_machine_apply_thermal_reduction(StateMachine *sm, float reduction) {
+    if (!sm) return;
+
+    /* Clamp to [0.0, 1.0] */
+    if (reduction < 0.0f) reduction = 0.0f;
+    if (reduction > 1.0f) reduction = 1.0f;
+
+    if (reduction != sm->thermal_reduction) {
+        log_info("Thermal reduction: %.0f%% → %.0f%%",
+                 sm->thermal_reduction * 100.0f, reduction * 100.0f);
+        sm->thermal_reduction = reduction;
+    }
+}
+
+float state_machine_get_thermal_reduction(const StateMachine *sm) {
+    return sm ? sm->thermal_reduction : 0.0f;
 }

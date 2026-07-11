@@ -123,21 +123,101 @@ void sysfs_writer_flush(SysfsWriter *w) {
 
 void sysfs_writer_apply(const SysfsWriter *w, const ActionParams *params,
                         PowerMode mode) {
-    (void)w;
-    (void)params;
-    (void)mode;
-    /* TODO: iterate config knobs and queue writes based on ActionParams fields.
-     *
-     * For each enabled knob in cfg->sysfs.knobs:
-     *   - If knob is cpufreqMax: write params->cpu_freq_max[cluster] to path
-     *   - If knob is cpufreqMin: write params->cpu_freq_min[cluster] to path
-     *   - If knob is gpuMaxFreq: write params->gpu_max_freq to devfreq path
-     *   - If knob is governor: write params->governor string
-     *
-     * This is a stub — the full implementation expands per-cluster knobs
-     * and queues individual write requests before flushing.
-     */
-    log_debug("sysfs_writer_apply: mode=%d (stub — no knobs written yet)", mode);
+    if (!w || !params) return;
+
+    const Config *cfg = w->cfg;
+    bool applied_any = false;
+
+    for (int k = 0; k < cfg->sysfs.nr_knobs; k++) {
+        KnobDef *knob = &cfg->sysfs.knobs[k];
+        if (!knob->enabled) continue;
+
+        char value[MAX_PATH_LEN];
+
+        if (strcmp(knob->name, "cpufreqMax") == 0) {
+            /* Expand per-cluster */
+            int cpu = 0;
+            for (int c = 0; c < cfg->cpu.nr_clusters; c++) {
+                for (int j = 0; j < cfg->cpu.power_model[c].nr_cores; j++, cpu++) {
+                    if (params->has_cpu_freq_max && params->cpu_freq_max[c] > 0) {
+                        snprintf(value, sizeof(value), "%d", params->cpu_freq_max[c]);
+                    } else {
+                        /* Default: max frequency (~9.9 GHz for SM8550) */
+                        snprintf(value, sizeof(value), "%d", 9999000);
+                    }
+                    char path[MAX_PATH_LEN];
+                    snprintf(path, sizeof(path), knob->path, cpu);
+                    sysfs_writer_queue_raw((SysfsWriter *)w, path, value);
+                    applied_any = true;
+                }
+            }
+        } else if (strcmp(knob->name, "cpufreqMin") == 0) {
+            int cpu = 0;
+            for (int c = 0; c < cfg->cpu.nr_clusters; c++) {
+                for (int j = 0; j < cfg->cpu.power_model[c].nr_cores; j++, cpu++) {
+                    if (params->has_cpu_freq_min && params->cpu_freq_min[c] > 0) {
+                        snprintf(value, sizeof(value), "%d", params->cpu_freq_min[c]);
+                    } else {
+                        snprintf(value, sizeof(value), "%d", 300000);  /* 300 MHz min */
+                    }
+                    char path[MAX_PATH_LEN];
+                    snprintf(path, sizeof(path), knob->path, cpu);
+                    sysfs_writer_queue_raw((SysfsWriter *)w, path, value);
+                    applied_any = true;
+                }
+            }
+        } else if (strcmp(knob->name, "cpufreqGovernor") == 0 ||
+                   strcmp(knob->name, "governor") == 0) {
+            if (params->has_governor && params->governor[0]) {
+                snprintf(value, sizeof(value), "%s", params->governor);
+            } else {
+                snprintf(value, sizeof(value), "schedutil");
+            }
+            /* Write to first CPU (governor is typically per-cluster or global) */
+            char path[MAX_PATH_LEN];
+            snprintf(path, sizeof(path), knob->path, 0);
+            sysfs_writer_queue_raw((SysfsWriter *)w, path, value);
+            applied_any = true;
+        } else if (strcmp(knob->name, "gpuMaxFreq") == 0 ||
+                   strcmp(knob->name, "gpuMax") == 0) {
+            if (params->has_gpu_max_freq && params->gpu_max_freq > 0) {
+                snprintf(value, sizeof(value), "%d", params->gpu_max_freq);
+            } else {
+                snprintf(value, sizeof(value), "999900000");  /* Max GPU freq */
+            }
+            sysfs_writer_queue_raw((SysfsWriter *)w, knob->path, value);
+            applied_any = true;
+        } else if (strcmp(knob->name, "gpuMinFreq") == 0 ||
+                   strcmp(knob->name, "gpuMin") == 0) {
+            if (params->has_gpu_min_freq && params->gpu_min_freq > 0) {
+                snprintf(value, sizeof(value), "%d", params->gpu_min_freq);
+            } else {
+                snprintf(value, sizeof(value), "0");
+            }
+            sysfs_writer_queue_raw((SysfsWriter *)w, knob->path, value);
+            applied_any = true;
+        } else if (strcmp(knob->name, "memBwMax") == 0 ||
+                   strcmp(knob->name, "ddrMaxFreq") == 0) {
+            if (params->has_ddr_max_freq && params->ddr_max_freq > 0) {
+                snprintf(value, sizeof(value), "%d", params->ddr_max_freq);
+            } else {
+                snprintf(value, sizeof(value), "999900000");
+            }
+            sysfs_writer_queue_raw((SysfsWriter *)w, knob->path, value);
+            applied_any = true;
+        } else {
+            /* Unknown knob type — skip */
+            log_debug("sysfs_writer_apply: unknown knob '%s', skipping", knob->name);
+        }
+    }
+
+    if (applied_any) {
+        /* Flush immediately for mode/scene changes */
+        sysfs_writer_flush((SysfsWriter *)w);
+    }
+
+    log_debug("sysfs_writer_apply: mode=%d, %s knobs",
+              mode, applied_any ? "applied" : "none to apply");
 }
 
 int sysfs_writer_queue_raw(SysfsWriter *w, const char *path, const char *value) {

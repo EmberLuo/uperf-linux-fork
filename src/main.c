@@ -8,7 +8,9 @@
 #include "heavyload_detector.h"
 #include "power_model.h"
 #include "game_scanner.h"
+#include "thermal.h"
 #include "dbus_interface.h"
+#include "perapp_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,7 @@ static CgroupManager *g_cm = NULL;
 static HeavyLoadDetector *g_detector = NULL;
 static GameScanner *g_scanner = NULL;
 static DbusManager *g_dbus = NULL;
+static ThermalManager *g_thermal = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload_config = 0;
 
@@ -139,6 +142,39 @@ static int event_loop(void) {
                     heavyload_detector_is_heavy(g_detector) ? TRUE : FALSE);
             }
 
+            /* Thermal monitoring — adjust behavior based on temperature */
+            if (g_thermal) {
+                int nr_zones = thermal_manager_zone_count(g_thermal);
+                if (nr_zones > 0) {
+                    ThermalState tstate = thermal_manager_update(g_thermal);
+                    float reduction = thermal_manager_get_reduction_factor(g_thermal);
+
+                    if (reduction > 0.0f) {
+                        log_warn("Thermal %s: reducing performance by %.0f%% (max temp: %d.%03d°C)",
+                                 thermal_state_to_string(tstate),
+                                 reduction * 100.0f,
+                                 thermal_manager_get_max_temp(g_thermal) / 1000,
+                                 thermal_manager_get_max_temp(g_thermal) % 1000);
+                        /* Apply reduction to state machine for frequency capping */
+                        state_machine_apply_thermal_reduction(g_sm, reduction);
+                        /* Update DBus with thermal state for GUI */
+                        if (g_dbus) {
+                            dbus_manager_set_thermal_state(g_dbus,
+                                thermal_manager_get_max_temp(g_thermal),
+                                thermal_state_to_string(tstate));
+                        }
+                    } else {
+                        /* Reset thermal reduction when back to normal */
+                        state_machine_apply_thermal_reduction(g_sm, 0.0f);
+                        if (g_dbus) {
+                            dbus_manager_set_thermal_state(g_dbus,
+                                thermal_manager_get_max_temp(g_thermal),
+                                "normal");
+                        }
+                    }
+                }
+            }
+
             /* Check if we need to boost */
             if (g_sm && heavyload_detector_is_heavy(g_detector)) {
                 state_machine_feed_event(g_sm, EVT_HEAVY_LOAD_START);
@@ -157,6 +193,22 @@ static int event_loop(void) {
                     /* Apply new state's sysfs knobs */
                     ActionParams params;
                     state_machine_get_actions(g_sm, &params);
+                    /* Apply thermal reduction to frequency limits */
+                    float thermal_red = state_machine_get_thermal_reduction(g_sm);
+                    if (thermal_red > 0.0f && params.has_cpu_freq_max) {
+                        for (int c = 0; c < 8; c++) {  /* MAX_CLUSTERS */
+                            if (params.cpu_freq_max[c] > 0) {
+                                /* Scale down: reduce max freq proportionally to thermal severity */
+                                int reduced = params.cpu_freq_max[c] * (1.0f - thermal_red * 0.5f);
+                                if (reduced < params.cpu_freq_max[c]) {
+                                    params.cpu_freq_max[c] = reduced;
+                                    log_debug("Thermal cap: cluster %d freq %d → %d Hz",
+                                              c, params.cpu_freq_max[c] / (int)(1.0f - thermal_red * 0.5f),
+                                              reduced);
+                                }
+                            }
+                        }
+                    }
                     if (g_writer) {
                         sysfs_writer_apply(g_writer, &params,
                                            state_machine_get_mode(g_sm));
@@ -177,6 +229,28 @@ static int event_loop(void) {
             last_scan = now;
             if (g_scanner) {
                 game_scanner_scan(g_scanner);
+                /* Update DBus with game list + per-app modes */
+                GameProcess results[MAX_GAMES];
+                int nr = game_scanner_get_results(g_scanner, results, MAX_GAMES);
+                if (nr > 0 && g_dbus) {
+                    GameProcessEntry dbus_games[MAX_GAMES];
+                    for (int i = 0; i < nr; i++) {
+                        dbus_games[i].pid = results[i].pid;
+                        dbus_games[i].comm = g_strdup(results[i].comm);
+                        dbus_games[i].cmdline = g_strdup(results[i].cmdline);
+                        dbus_games[i].package = g_strdup(results[i].package);
+                        /* Look up per-app mode */
+                        dbus_games[i].mode = g_strdup(
+                            game_scanner_get_app_mode(g_scanner, results[i].comm));
+                    }
+                    dbus_manager_update_games(g_dbus, dbus_games, nr);
+                    for (int i = 0; i < nr; i++) {
+                        g_free(dbus_games[i].comm);
+                        g_free(dbus_games[i].cmdline);
+                        g_free(dbus_games[i].package);
+                        g_free(dbus_games[i].mode);
+                    }
+                }
             }
         }
 
@@ -307,6 +381,8 @@ int main(int argc, char *argv[]) {
 
     g_scanner = game_scanner_new();
     if (g_scanner) {
+        /* Load per-app mode rules */
+        game_scanner_perapp_scan(g_scanner, g_config.switcher.perapp_file);
         game_scanner_scan(g_scanner);
     }
 
@@ -325,6 +401,18 @@ int main(int argc, char *argv[]) {
         log_info("DBus manager initialized on system bus");
     } else {
         log_warn("Failed to initialize DBus manager (GUI will not be able to control daemon)");
+    }
+
+    /* Initialize thermal manager */
+    g_thermal = thermal_manager_new(NULL);  /* Use default SM8550 policy */
+    if (g_thermal) {
+        thermal_manager_discover_zones(g_thermal);
+        int nz = thermal_manager_zone_count(g_thermal);
+        if (nz > 0) {
+            log_info("Thermal manager initialized with %d zone(s)", nz);
+        } else {
+            log_warn("No thermal zones discovered — thermal throttling disabled");
+        }
     }
 
     /* Apply initial state */

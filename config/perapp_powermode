@@ -1,7 +1,7 @@
 # Uperf-Linux per-application power mode mapping
-# Format: <process_pattern> <mode>
+# Format: <process_pattern> <mode>   (space or colon separated)
 # Patterns are matched against /proc/[pid]/comm and /proc/[pid]/cmdline
-# Modes: balance, powersave, performance
+# Modes: balance, powersave, performance, fast
 
 # Genshin Impact / Honkai: Star Rail (miHoYo/HoYoverse)
 cn.hoyoverse                    performance

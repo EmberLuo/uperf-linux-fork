@@ -78,4 +78,12 @@ float state_machine_get_hint_duration(const StateMachine *sm, SceneState scene);
 bool state_machine_needs_boost(const StateMachine *sm, float current_load,
                                float heavy_load_threshold);
 
+/* Apply a thermal reduction factor (0.0-1.0) to the current action parameters.
+ * Scales down frequency limits proportionally to the thermal severity.
+ * reduction: 0.0 = no reduction, 1.0 = maximum reduction to minimum freq. */
+void state_machine_apply_thermal_reduction(StateMachine *sm, float reduction);
+
+/* Get the current thermal reduction factor. */
+float state_machine_get_thermal_reduction(const StateMachine *sm);
+
 #endif /* UPERF_STATE_MACHINE_H */

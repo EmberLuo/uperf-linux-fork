@@ -50,4 +50,13 @@ int game_scanner_add_pattern(GameScanner *gs, const char *pattern);
 /* Get the number of registered patterns. */
 int game_scanner_pattern_count(const GameScanner *gs);
 
+/* Load per-app mode rules from a file.
+ * Rules are applied during scan to assign modes to detected games.
+ * Returns 0 on success, -1 on error. */
+int game_scanner_perapp_scan(GameScanner *gs, const char *perapp_file);
+
+/* Get the assigned power mode for a detected game by comm name.
+ * Returns MODE_BALANCE if no rule matches. */
+const char *game_scanner_get_app_mode(const GameScanner *gs, const char *comm);
+
 #endif /* UPERF_GAME_SCANNER_H */

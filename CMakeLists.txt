@@ -40,6 +40,8 @@ set(UPERF_SOURCES
     src/cgroup_manager.c
     src/heavyload_detector.c
     src/game_scanner.c
+    src/thermal.c
+    src/perapp_config.c
     src/dbus_interface.c
     src/main.c
 )
@@ -54,6 +56,8 @@ set(UPERF_HEADERS
     src/include/cgroup_manager.h
     src/include/heavyload_detector.h
     src/include/game_scanner.h
+    src/include/thermal.h
+    src/include/perapp_config.h
     src/include/dbus_interface.h
 )
 
@@ -88,6 +92,15 @@ target_include_directories(uperfctl PRIVATE
 target_link_libraries(uperfctl PRIVATE
     ${JSONC_LIBRARIES}
     pthread
+)
+
+# ---- Config wizard ----
+add_executable(uperf-wizard src/config_wizard.c src/log.c)
+target_include_directories(uperf-wizard PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+)
+target_link_libraries(uperf-wizard PRIVATE
+    pthread rt
 )
 
 # ---- Tests ----
@@ -135,7 +148,7 @@ if(BUILD_GUI)
 endif()
 
 # ---- Install targets ----
-install(TARGETS uperf-linux uperfctl
+install(TARGETS uperf-linux uperfctl uperf-wizard
     RUNTIME DESTINATION /usr/local/bin
 )
 install(DIRECTORY config/ DESTINATION /etc/uperf-linux)

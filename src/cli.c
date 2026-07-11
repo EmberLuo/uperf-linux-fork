@@ -21,6 +21,8 @@ static void print_usage(const char *prog) {
         "  mode <name>         Set power mode (balance|powersave|performance)\n"
         "  game-list           List detected game processes\n"
         "  log-level <n>       Set log level (0=debug..4=fatal)\n"
+        "  detect              Scan hardware and print baseline JSON config\n"
+        "  calibrate           Run power model calibration (TODO)\n"
         "  help                Show this help\n",
         prog);
 }
@@ -201,6 +203,20 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(cmd, "game-list") == 0) {
         return cmd_game_list();
+    }
+
+    if (strcmp(cmd, "detect") == 0) {
+        /* Delegate to the config wizard */
+        static const char *wizard_path = "/usr/local/bin/uperf-wizard";
+        char cmd_buf[512];
+        snprintf(cmd_buf, sizeof(cmd_buf), "exec %s detect 2>&1", wizard_path);
+        int ret = system(cmd_buf);
+        return ret >> 8;
+    }
+
+    if (strcmp(cmd, "calibrate") == 0) {
+        fprintf(stderr, "Calibration not yet implemented. Use uperf-wizard calibrate.\n");
+        return 1;
     }
 
     fprintf(stderr, "Unknown command: %s\n", cmd);

@@ -32,6 +32,10 @@ struct DbusManager {
     int                nr_games;
     int                games_cap;
 
+    /* Thermal state */
+    int                max_temp_millidegC;
+    char               thermal_state_str[32];
+
     /* Mode change handler */
     DbusSetModeFunc    set_mode_cb;
     void              *set_mode_ud;
@@ -60,11 +64,23 @@ static const gchar introspection_xml[] =
     "    <property name=\"GameProcesses\" type=\"a(ii:sssss)\" access=\"read\">\n"
     "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
     "    </property>\n"
+    "    <property name=\"MaxTemperature\" type=\"i\" access=\"read\">\n"
+    "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
+    "    </property>\n"
+    "    <property name=\"ThermalState\" type=\"s\" access=\"read\">\n"
+    "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
+    "    </property>\n"
     "    <method name=\"SetMode\">\n"
     "      <arg direction=\"in\" type=\"s\" name=\"mode\"/>\n"
     "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
     "    </method>\n"
     "    <method name=\"ReloadConfig\">\n"
+    "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
+    "    </method>\n"
+    "    <method name=\"SetGameMode\">\n"
+    "      <arg direction=\"in\" type=\"i\" name=\"pid\"/>\n"
+    "      <arg direction=\"in\" type=\"s\" name=\"app\"/>\n"
+    "      <arg direction=\"in\" type=\"s\" name=\"mode\"/>\n"
     "      <arg direction=\"out\" type=\"b\" name=\"success\"/>\n"
     "    </method>\n"
     "    <signal name=\"ModeChanged\">\n"
@@ -149,6 +165,16 @@ static GVariant *handle_method_call(GDBusConnection      *connection,
         handle_reload_config(connection, sender, object_path, interface_name,
                              method_name, parameters, invocation, user_data);
         return NULL;
+    } else if (strcmp(method_name, "SetGameMode") == 0) {
+        DbusManager *mgr = (DbusManager *)user_data;
+        int pid_in;
+        const char *app_in, *mode_in;
+        g_variant_get(parameters, "(i(ss))", &pid_in, &app_in, &mode_in);
+        log_info("DBus SetGameMode called: pid=%d app=%s mode=%s", pid_in, app_in, mode_in);
+        dbus_manager_set_game_mode(mgr, (pid_t)pid_in, app_in, mode_in);
+        g_dbus_method_invocation_return_value(invocation,
+            g_variant_new("(b)", TRUE));
+        return NULL;
     }
     return NULL;
 }
@@ -200,6 +226,14 @@ static GVariant *on_get_game_processes(DbusManager *mgr) {
     return g_variant_builder_end(&builder);
 }
 
+static GVariant *on_get_max_temperature(DbusManager *mgr) {
+    return g_variant_new_int32(mgr->max_temp_millidegC);
+}
+
+static GVariant *on_get_thermal_state(DbusManager *mgr) {
+    return g_variant_new_string(mgr->thermal_state_str[0] ? mgr->thermal_state_str : "normal");
+}
+
 /* Property query dispatcher */
 static GVariant *on_get_property(GObject         *object,
                                   guint            prop_id,
@@ -215,6 +249,8 @@ static GVariant *on_get_property(GObject         *object,
         case 4: g_value_set_boxed(value, on_get_cpu_loads(mgr)); break;
         case 5: g_value_set_boolean(value, on_get_is_heavy_load(mgr)); break;
         case 6: g_value_set_boxed(value, on_get_game_processes(mgr)); break;
+        case 7: g_value_set_int32(value, on_get_max_temperature(mgr)); break;
+        case 8: g_value_set_string(value, on_get_thermal_state(mgr)); break;
         default: return NULL;
     }
     return NULL;
@@ -231,6 +267,8 @@ enum {
     PROP_CPU_LOADS,
     PROP_IS_HEAVY_LOAD,
     PROP_GAME_PROCESSES,
+    PROP_MAX_TEMPERATURE,
+    PROP_THERMAL_STATE,
     N_PROPS
 };
 
@@ -283,6 +321,8 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
     mgr->nr_games = 0;
     mgr->games_cap = 16;
     mgr->games = calloc(mgr->games_cap, sizeof(GameProcessEntry));
+    mgr->max_temp_millidegC = 0;
+    mgr->thermal_state_str[0] = '\0';
 
     /* Connect to bus */
     GError *err = NULL;
@@ -313,6 +353,12 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
     properties[PROP_GAME_PROCESSES] =
         g_param_spec_boxed("GameProcesses", "Game Processes", "Detected game processes",
                            G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+    properties[PROP_MAX_TEMPERATURE] =
+        g_param_spec_int("MaxTemperature", "Max Temperature", "Highest thermal zone temperature (millidegC)",
+                         -273000, G_MAXINT32, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+    properties[PROP_THERMAL_STATE] =
+        g_param_spec_string("ThermalState", "Thermal State", "Current thermal state",
+                            "normal", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
 
     /* Export object — use GDBusObjectSkeleton for full control */
     mgr->export_id = 0;  /* Will be set via GDBusInterfaceSkeleton */
@@ -437,4 +483,39 @@ void dbus_manager_set_mode_handler(DbusManager *mgr,
     if (!mgr) return;
     mgr->set_mode_cb = callback;
     mgr->set_mode_ud = user_data;
+}
+
+void dbus_manager_set_thermal_state(DbusManager *mgr, int max_temp_millidegC,
+                                     const char *state_str) {
+    if (!mgr) return;
+    mgr->max_temp_millidegC = max_temp_millidegC;
+    if (state_str) {
+        strncpy(mgr->thermal_state_str, state_str, sizeof(mgr->thermal_state_str) - 1);
+        mgr->thermal_state_str[sizeof(mgr->thermal_state_str) - 1] = '\0';
+    }
+    log_debug("DBus thermal state: %d.%03d°C %s",
+              max_temp_millidegC / 1000, max_temp_millidegC % 1000,
+              state_str ? state_str : "unknown");
+}
+
+void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_name,
+                                 const char *mode) {
+    if (!mgr || !app_name || !mode) return;
+    log_info("DBus SetGameMode: pid=%d app='%s' mode='%s'", pid, app_name, mode);
+
+    /* Find or add game entry */
+    for (int i = 0; i < mgr->nr_games; i++) {
+        if (mgr->games[i].pid == pid) {
+            g_free(mgr->games[i].mode);
+            mgr->games[i].mode = g_strdup(mode);
+            return;
+        }
+    }
+    /* New entry */
+    if (mgr->nr_games < mgr->games_cap) {
+        int idx = mgr->nr_games++;
+        mgr->games[idx].pid = pid;
+        mgr->games[idx].comm = g_strdup(app_name);
+        mgr->games[idx].mode = g_strdup(mode);
+    }
 }

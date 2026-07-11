@@ -209,7 +209,7 @@ journalctl -u uperf-linux -f
 - [x] DBus 接口（org.uperflinux.Daemon）
 - [x] Qt6/QML GUI（仪表盘、游戏列表、设置、日志）
 - [x] deb 打包（dpkg-deb）
-- [ ] 单元测试（扩展覆盖率）
-- [ ] 热管理（读取 /sys/class/thermal/）
-- [ ] 按应用电源模式自动切换
-- [ ] SoC 配置向导
+- [x] 单元测试（扩展覆盖率）
+- [x] 热管理（读取 /sys/class/thermal/，频率限制，DBus 暴露）
+- [x] 按应用电源模式自动切换（perapp_powermode 解析器，游戏扫描器集成，GUI 接线）
+- [x] SoC 配置向导（uperf-wizard detect，uperfctl detect）
