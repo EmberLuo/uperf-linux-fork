@@ -17,18 +17,14 @@ jobs:
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
-    - name: Build daemon + GUI in ARM64 container
+    - name: Build in ARM64 container
       run: |
         docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/repo ubuntu:24.04 bash -c '
-          # Add noble amd64 repo for Qt6 dev headers
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble universe" > /etc/apt/sources.list.d/noble-amd64.list
-
-          apt-get update
-          apt-get install -y gcc g++ cmake pkg-config make file \
+          apt-get update && apt-get install -y gcc g++ cmake pkg-config make file \
             libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
-            qt6-base-dev:amd64 qt6-charts-dev:amd64
+            qt6-base-dev qt6-charts-dev
 
-          # Build everything
+          # Build daemon + GUI
           cd /repo && mkdir -p build-arm64 && cd build-arm64
           cmake .. -DBUILD_TESTS=OFF
           make -j$(nproc)
