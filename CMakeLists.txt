@@ -153,10 +153,14 @@ endif()
 
 # ---- Qt6 GUI ----
 if(BUILD_GUI)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Charts)
-    qt_standard_project_setup()
-
-    add_subdirectory(gui)
+    # Try full Qt6 with QML/Quick first, fall back to Core+Gui+Widgets
+    if(find_package(Qt6 QUIET COMPONENTS Qml Quick))
+        find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Charts)
+        qt_standard_project_setup()
+        add_subdirectory(gui)
+    else()
+        message(STATUS "Qt6 QML/Quick not available, skipping GUI build")
+    endif()
 endif()
 
 # ---- Install targets ----
