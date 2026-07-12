@@ -20,10 +20,23 @@ jobs:
     - name: Build in ARM64 container
       run: |
         docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/repo ubuntu:24.04 bash -c '
-          apt-get update && apt-get install -y gcc g++ cmake pkg-config make file libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev
-          cd /repo && mkdir -p build-arm64 && cd build-arm64 && cmake .. -DBUILD_GUI=OFF -DBUILD_TESTS=OFF && make -j$(nproc)
-          file uperf-linux uperfctl uperf-wizard
-          ls -lh uperf-linux uperfctl uperf-wizard
+          # Add noble amd64 as temporary repo for dev headers
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe" > /etc/apt/sources.list.d/noble-amd64.list
+
+          # Install ARM64 build deps
+          apt-get update
+          apt-get install -y gcc g++ cmake pkg-config make file \
+            libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
+            qt6-base-dev:amd64 qt6-charts-dev:amd64 qt6-qml-dev:amd64 \
+            qtbase6-dev-tools:amd64
+
+          # Build daemon
+          cd /repo && mkdir -p build-arm64 && cd build-arm64
+          cmake .. -DBUILD_TESTS=OFF
+          make -j$(nproc)
+
+          file uperf-linux uperfctl uperf-wizard gui/uperf-gui
+          ls -lh uperf-linux uperfctl uperf-wizard gui/uperf-gui
         '
 
     - name: Upload artifacts
@@ -34,4 +47,5 @@ jobs:
           ${{ github.workspace }}/build-arm64/uperf-linux
           ${{ github.workspace }}/build-arm64/uperfctl
           ${{ github.workspace }}/build-arm64/uperf-wizard
+          ${{ github.workspace }}/build-arm64/gui/uperf-gui
         retention-days: 7
