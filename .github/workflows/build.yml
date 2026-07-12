@@ -10,117 +10,75 @@ on:
 jobs:
   build-daemon:
     runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:22.04
+      options: --platform linux/arm64
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install cross-compiler and core deps
+    - name: Install build deps
       run: |
-        sudo dpkg --add-architecture arm64
-        # Use old-releases for arm64 on noble, but 22.04 jammy has arm64
-        sudo sed -i 's/archive.ubuntu.com/security.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
-        sudo apt-get update
-        sudo apt-get install -y \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          cmake pkg-config \
-          libjson-c-dev:arm64 \
-          libglib2.0-dev:arm64 \
-          libdbus-1-dev:arm64 \
-          libsystemd-dev:arm64
-
-    - name: Create toolchain file
-      run: |
-        cat > toolchain.cmake << 'EOF'
-        set(CMAKE_SYSTEM_NAME Linux)
-        set(CMAKE_SYSTEM_PROCESSOR aarch64)
-        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
-        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
-        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-        set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-        EOF
+        apt-get update
+        apt-get install -y gcc g++ cmake pkg-config make file \
+          libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev
 
     - name: Build daemon + CLI + wizard
       run: |
-        mkdir build-arm64
-        cd build-arm64
-        cmake .. \
-          -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake \
-          -DBUILD_GUI=OFF \
-          -DBUILD_TESTS=OFF
+        mkdir build
+        cd build
+        cmake .. -DBUILD_GUI=OFF -DBUILD_TESTS=OFF
         make -j$(nproc)
 
     - name: Verify binaries
       run: |
-        file build-arm64/uperf-linux
-        file build-arm64/uperfctl
-        file build-arm64/uperf-wizard
-        ls -lh build-arm64/uperf-linux build-arm64/uperfctl build-arm64/uperf-wizard
+        file build/uperf-linux
+        file build/uperfctl
+        file build/uperf-wizard
+        ls -lh build/uperf-linux build/uperfctl build/uperf-wizard
 
     - name: Upload daemon artifacts
       uses: actions/upload-artifact@v4
       with:
         name: uperf-linux-arm64
         path: |
-          build-arm64/uperf-linux
-          build-arm64/uperfctl
-          build-arm64/uperf-wizard
+          build/uperf-linux
+          build/uperfctl
+          build/uperf-wizard
         retention-days: 7
 
   build-gui:
     runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:22.04
+      options: --platform linux/arm64
     needs: build-daemon
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install cross-compiler and Qt6 deps
+    - name: Install Qt6 build deps
       run: |
-        sudo dpkg --add-architecture arm64
-        sudo apt-get update
-        sudo apt-get install -y \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          cmake pkg-config \
-          libjson-c-dev:arm64 \
-          libglib2.0-dev:arm64 \
-          libdbus-1-dev:arm64 \
-          libsystemd-dev:arm64 \
-          qt6-base-dev:arm64 qt6-charts-dev:arm64 qt6-qml-dev:arm64 \
-          qtbase6-dev-tools
-
-    - name: Create toolchain file
-      run: |
-        cat > toolchain.cmake << 'EOF'
-        set(CMAKE_SYSTEM_NAME Linux)
-        set(CMAKE_SYSTEM_PROCESSOR aarch64)
-        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
-        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
-        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-        set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-        EOF
+        apt-get update
+        apt-get install -y gcc g++ cmake pkg-config make file \
+          libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
+          qt6-base-dev qt6-charts-dev qt6-qml-dev qtbase6-dev-tools
 
     - name: Build GUI
       run: |
-        mkdir build-gui-arm64
-        cd build-gui-arm64
-        cmake .. \
-          -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake \
-          -DBUILD_TESTS=OFF \
-          -DQt6_DIR=/usr/lib/aarch64-linux-gnu/cmake/Qt6 \
-          -DCMAKE_PREFIX_PATH=/usr/lib/aarch64-linux-gnu
+        mkdir build
+        cd build
+        cmake .. -DBUILD_TESTS=OFF
         make -j$(nproc)
 
     - name: Verify GUI binary
       run: |
-        file build-gui-arm64/gui/uperf-gui
-        ls -lh build-gui-arm64/gui/uperf-gui
+        file build/gui/uperf-gui
+        ls -lh build/gui/uperf-gui
 
     - name: Upload GUI artifact
       uses: actions/upload-artifact@v4
       with:
         name: uperf-gui-arm64
-        path: build-gui-arm64/gui/uperf-gui
+        path: build/gui/uperf-gui
         retention-days: 7
