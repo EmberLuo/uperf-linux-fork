@@ -124,6 +124,8 @@ typedef struct {
     float   gesture_thd_y;
     float   gesture_delay_time;
     float   hold_enter_time;
+    int     screen_width;   /* Physical screen width in pixels (0 = auto-detect) */
+    int     screen_height;  /* Physical screen height in pixels (0 = auto-detect) */
 } InputConfig;
 
 /* Scheduling affinity class name */

@@ -2,12 +2,77 @@
 #include "log.h"
 
 #include <json-c/json.h>
+#include <json-c/json_tokener.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <errno.h>
+
+/* json_parse_file is deprecated/removed in json-c 0.17+.
+ * Provide a fallback that parses JSON from a file path. */
+#ifndef HAVE_JSON_PARSE_FILE
+extern struct json_object *json_parse_file(const char *path, char **error_msg);
+#endif
+
+#ifdef HAVE_JSON_PARSE_FILE
+/* Use the system json_parse_file if available */
+#define USE_SYSTEM_JSON_PARSE_FILE 1
+#else
+/* Fallback: read file content and parse with tokener */
+static struct json_object *json_parse_file_fallback(const char *path, char **error_msg) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        if (error_msg) {
+            *error_msg = strdup(strerror(errno));
+        }
+        return NULL;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    char *buf = malloc(len + 1);
+    if (!buf) {
+        fclose(fp);
+        if (error_msg) {
+            *error_msg = strdup("malloc failed");
+        }
+        return NULL;
+    }
+
+    if ((long)fread(buf, 1, len, fp) != len) {
+        if (error_msg) {
+            *error_msg = strdup("failed to read file");
+        }
+        free(buf);
+        fclose(fp);
+        return NULL;
+    }
+    buf[len] = '\0';
+    fclose(fp);
+
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object *obj = json_tokener_parse_ex(tok, buf, len);
+    free(buf);
+
+    if (tok && obj) {
+        enum json_tokener_error terr = json_tokener_get_error(tok);
+        if (terr != json_tokener_continue) {
+            if (error_msg) {
+                *error_msg = strdup(json_tokener_error_desc(terr));
+            }
+            json_object_put(obj);
+            obj = NULL;
+        }
+    }
+
+    json_tokener_free(tok);
+    return obj;
+}
+#endif
 
 /* ----------------------------------------------------------------
  * JSON parsing helpers
@@ -289,9 +354,21 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
             else if (strcmp(state_name, "boost") == 0) scene = SCENE_BOOST;
             else continue;
 
-            /* Parse state-specific params */
-            parse_action_params(state_obj,
-                &preset->presets.actions[scene]);
+            /* Parse state-specific params — StatePresets has named fields, not an array */
+            ActionParams *target_ap = NULL;
+            switch (scene) {
+                case SCENE_IDLE:      target_ap = &preset->presets.idle;      break;
+                case SCENE_TOUCH:     target_ap = &preset->presets.touch;     break;
+                case SCENE_TRIGGER:   target_ap = &preset->presets.trigger;   break;
+                case SCENE_GESTURE:   target_ap = &preset->presets.gesture;   break;
+                case SCENE_JUNK:      target_ap = &preset->presets.junk;      break;
+                case SCENE_SWITCH:    target_ap = &preset->presets.switch_;   break;
+                case SCENE_BOOST:     target_ap = &preset->presets.boost;     break;
+                default:              break;
+            }
+            if (target_ap) {
+                parse_action_params(state_obj, target_ap);
+            }
         }
     }
     return 0;
@@ -407,7 +484,10 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
         out->input.gesture_thd_y = 0.03f;
         out->input.gesture_delay_time = 2.0f;
         out->input.hold_enter_time = 1.0f;
+        out->input.screen_width = 0;   /* 0 = auto-detect from sysfs */
+        out->input.screen_height = 0;
 
+        /* Parse optional overrides */
         const char *s;
         if (json_object_object_get_ex(inp_obj, "swipeThd", &s))
             out->input.swipe_thd = json_object_get_double(s);
@@ -419,6 +499,10 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
             out->input.gesture_delay_time = json_object_get_double(s);
         if (json_object_object_get_ex(inp_obj, "holdEnterTime", &s))
             out->input.hold_enter_time = json_object_get_double(s);
+        if (json_object_object_get_ex(inp_obj, "screenWidth", &s))
+            out->input.screen_width = atoi(s);
+        if (json_object_object_get_ex(inp_obj, "screenHeight", &s))
+            out->input.screen_height = atoi(s);
     }
 
     return 0;
@@ -448,7 +532,12 @@ int config_load(Config *cfg, const char *path) {
 
     /* Parse JSON */
     char *err_msg = NULL;
-    struct json_object *root = json_parse_file(path, &err_msg);
+    struct json_object *root =
+#ifdef USE_SYSTEM_JSON_PARSE_FILE
+        json_parse_file(path, &err_msg);
+#else
+        json_parse_file_fallback(path, &err_msg);
+#endif
     if (!root) {
         log_error("Failed to parse JSON config '%s': %s", path, err_msg ?: "(unknown)");
         free(err_msg);

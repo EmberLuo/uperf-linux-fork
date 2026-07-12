@@ -45,13 +45,25 @@ struct StateMachine {
 static int scene_idx(SceneState s) { return (int)s; }
 static int mode_idx(PowerMode m) { return (int)m; }
 
+/* Map SceneState to StatePresets field index */
+static const ActionParams *get_preset_action(const StatePresets *sp, SceneState s) {
+    switch (s) {
+        case SCENE_IDLE:      return &sp->idle;
+        case SCENE_TOUCH:     return &sp->touch;
+        case SCENE_TRIGGER:   return &sp->trigger;
+        case SCENE_GESTURE:   return &sp->gesture;
+        case SCENE_JUNK:      return &sp->junk;
+        case SCENE_SWITCH:    return &sp->switch_;
+        case SCENE_BOOST:     return &sp->boost;
+        default:              return NULL;
+    }
+}
+
 /* Get the ActionParams for the current (mode, scene) pair */
-static ActionParams *get_action_params(StateMachine *sm, SceneState scene) {
-    (void)sm;
-    (void)scene;
-    /* TODO: return from cfg->presets[sm->current_mode].presets.actions[scene] */
-    /* For now, return a static zero-initialized params */
-    return NULL;
+static const ActionParams *get_action_params(const StateMachine *sm, SceneState scene) {
+    if (sm->cfg == NULL) return NULL;
+    const PowerModePreset *preset = &sm->cfg->presets[sm->current_mode];
+    return get_preset_action(&preset->presets, scene);
 }
 
 StateMachine *state_machine_new(const Config *cfg) {
@@ -74,11 +86,11 @@ StateMachine *state_machine_new(const Config *cfg) {
         sm->hint_duration[i] = cfg->switcher.hint_duration[i];
     }
 
-    /* Initialize actions from presets */
+    /* Initialize actions from presets (already populated by get_action_params at runtime) */
+    (void)sm;
     for (int m = 0; m < MODE_NUM; m++) {
         for (int s = 0; s < SCENE_NUM_STATES; s++) {
             memset(&sm->actions[m][s], 0, sizeof(ActionParams));
-            /* TODO: populate from cfg->presets[m].presets.actions[s] */
         }
     }
 
@@ -253,7 +265,8 @@ void state_machine_get_actions(const StateMachine *sm, ActionParams *out) {
     SceneState scene = sm->current_scene;
     PowerMode  mode  = sm->current_mode;
 
-    ActionParams *src = get_action_params((StateMachine *)sm, scene);
+    (void)mode;
+    const ActionParams *src = get_action_params(sm, scene);
     if (src) {
         memcpy(out, src, sizeof(*out));
     } else {

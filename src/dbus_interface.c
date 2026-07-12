@@ -18,6 +18,9 @@ struct DbusManager {
     guint             export_id;      /* Object export id */
     guint             stats_timer;    /* Source ID for stats timer */
 
+    /* DBus connection (stored for signal emission) */
+    GDBusConnection  *connection;
+
     /* Properties */
     char             *current_mode;
     char             *current_scene;
@@ -136,11 +139,15 @@ static void handle_set_mode(GDBusConnection      *connection,
         success = TRUE;
     }
 
-    /* Emit signal */
-    g_dbus_interface_skeleton_emit_signal(
-        G_DBUS_INTERFACE_SKELETON(connection),
-        "org.uperflinux.Daemon", "ModeChanged",
-        g_variant_new("(s)", mode), NULL);
+    /* Emit ModeChanged signal on the same connection */
+    g_dbus_connection_emit_signal(
+        connection,
+        sender,
+        object_path,
+        "org.uperflinux.Daemon",
+        "ModeChanged",
+        g_variant_new("(s)", mode),
+        NULL);
 
     g_dbus_method_invocation_return_value(invocation,
         g_variant_new("(b)", success));
@@ -316,6 +323,7 @@ static GParamSpec *properties[N_PROPS] = { NULL, };
 
 static gboolean stats_timer_callback(gpointer user_data) {
     DbusManager *mgr = (DbusManager *)user_data;
+    if (!mgr || !mgr->connection) return G_SOURCE_CONTINUE;
 
     /* Build frequencies array */
     GVariantBuilder freq_builder;
@@ -329,9 +337,12 @@ static gboolean stats_timer_callback(gpointer user_data) {
     for (int i = 0; i < mgr->nr_loads; i++)
         g_variant_builder_add(&load_builder, "(d)", mgr->loads[i]);
 
-    g_dbus_interface_skeleton_emit_signal(
-        G_DBUS_INTERFACE_SKELETON(mgr->export_id > 0 ? NULL : NULL),
-        "org.uperflinux.Daemon", "StatsUpdated",
+    g_dbus_connection_emit_signal(
+        mgr->connection,
+        NULL,   /* sender — NULL = anonymous */
+        "/org/uperflinux/Daemon",
+        "org.uperflinux.Daemon",
+        "StatsUpdated",
         g_variant_new("(aad)",
             g_variant_builder_end(&freq_builder),
             g_variant_builder_end(&load_builder)),
@@ -364,8 +375,8 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
 
     /* Connect to bus */
     GError *err = NULL;
-    GDBusConnection *conn = g_bus_wait_sync(bus_type, -1, NULL, &err);
-    if (!conn) {
+    mgr->connection = g_bus_wait_sync(bus_type, -1, NULL, &err);
+    if (!mgr->connection) {
         log_error("DBus: failed to connect to bus: %s", err->message);
         g_error_free(err);
         free(mgr);
@@ -392,8 +403,8 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
         g_param_spec_boxed("GameProcesses", "Game Processes", "Detected game processes",
                            G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
     properties[PROP_MAX_TEMPERATURE] =
-        g_param_spec_int("MaxTemperature", "Max Temperature", "Highest thermal zone temperature (millidegC)",
-                         -273000, G_MAXINT32, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+        g_param_spec_int32("MaxTemperature", "Max Temperature", "Highest thermal zone temperature (millidegC)",
+                         G_MININT32, G_MAXINT32, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
     properties[PROP_THERMAL_STATE] =
         g_param_spec_string("ThermalState", "Thermal State", "Current thermal state",
                             "normal", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
@@ -402,8 +413,8 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
                            "Array of (index, freq_hz) tuples for manual overrides",
                            G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
 
-    /* Export object — use GDBusObjectSkeleton for full control */
-    mgr->export_id = 0;  /* Will be set via GDBusInterfaceSkeleton */
+    /* Object export id — reserved for future GDBusObjectSkeleton use */
+    mgr->export_id = 0;
 
     log_info("DBus manager created on %s bus",
              bus_type == G_BUS_TYPE_SYSTEM ? "system" : "session");
@@ -412,6 +423,19 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
 
 void dbus_manager_free(DbusManager *mgr) {
     if (!mgr) return;
+
+    /* Cancel stats timer */
+    if (mgr->stats_timer > 0) {
+        g_source_remove(mgr->stats_timer);
+        mgr->stats_timer = 0;
+    }
+
+    /* Unref connection */
+    if (mgr->connection) {
+        g_object_unref(mgr->connection);
+        mgr->connection = NULL;
+    }
+
     g_free(mgr->current_mode);
     g_free(mgr->current_scene);
     if (mgr->games) {

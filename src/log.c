@@ -48,13 +48,15 @@ static int journald_priority(LogLevel level) {
 
 /* Map LogLevel to syslog priority */
 static int syslog_priority(LogLevel level) {
-    switch (level) {
-        case LOG_DEBUG:  return LOG_DEBUG;
-        case LOG_INFO:   return LOG_INFO;
-        case LOG_WARN:   return LOG_WARNING;
-        case LOG_ERROR:  return LOG_ERR;
-        case LOG_FATAL:  return LOG_CRIT;
-        default:         return LOG_INFO;
+    /* Use numeric comparison to avoid LOG_DEBUG/LOG_INFO macro
+     * collisions with syslog.h when it's transitively included. */
+    switch ((int)level) {
+        case 0: return LOG_DEBUG;   /* LOG_DEBUG enum == 0 == syslog macro */
+        case 1: return LOG_INFO;    /* LOG_INFO enum == 1 == syslog macro */
+        case 2: return LOG_WARNING;
+        case 3: return LOG_ERR;
+        case 4: return LOG_CRIT;
+        default: return LOG_INFO;
     }
 }
 
