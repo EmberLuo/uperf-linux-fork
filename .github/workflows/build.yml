@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-daemon:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -17,6 +17,8 @@ jobs:
     - name: Install cross-compiler and core deps
       run: |
         sudo dpkg --add-architecture arm64
+        # Use old-releases for arm64 on noble, but 22.04 jammy has arm64
+        sudo sed -i 's/archive.ubuntu.com/security.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
         sudo apt-get update
         sudo apt-get install -y \
           gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
@@ -67,7 +69,8 @@ jobs:
         retention-days: 7
 
   build-gui:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
+    needs: build-daemon
     steps:
     - name: Checkout
       uses: actions/checkout@v4
