@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QVariantList>
 #include <QQmlContext>
+#include <QCoreApplication>
 
 /* DBus proxy: bridges org.uperflinux.Daemon DBus interface to QML.
  * Polls properties every 500ms and listens for DBus signals. */
@@ -23,13 +24,13 @@ class ModeProxy : public QObject {
 public:
     explicit ModeProxy(QObject *parent = nullptr)
         : QObject(parent)
+        , m_bus(QDBusConnection::systemBus())
         , m_currentMode("balance")
         , m_currentScene("idle")
         , m_isHeavyLoad(false)
         , m_maxTemp(0)
         , m_thermalState("normal")
     {
-        m_bus = QDBusConnection::systemBus();
         if (!m_bus.isConnected()) {
             qWarning() << "[ModeProxy] Cannot connect to system bus";
             return;
@@ -287,7 +288,7 @@ int main(int argc, char *argv[]) {
 
     // Load QML from resources or file
     const QUrl url(QStringLiteral("qrc:/qml/Main.qml"));
-    connect(&engine, &QQmlApplicationEngine::objectCreated,
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
             &app, [url](QObject *obj, const QUrl &objUrl) {
         if (!obj && url == objUrl)
             QCoreApplication::exit(-1);

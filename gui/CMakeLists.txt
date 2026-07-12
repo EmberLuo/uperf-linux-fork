@@ -13,13 +13,9 @@ qt_standard_project_setup()
 
 set(QML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/qml")
 
-# Qt6 resource file
-qt_add_resources(QML_RESOURCES gui/resources/icons.qrc)
-
-# Executable
+# Executable (no qrc needed since resources dir is empty)
 add_executable(uperf-gui
     main.cpp
-    ${QML_RESOURCES}
 )
 
 target_link_libraries(uperf-gui PRIVATE
@@ -47,9 +43,4 @@ install(DIRECTORY ${QML_DIR}/
 # Desktop entry
 install(FILES uperf-gui.desktop
     DESTINATION share/applications
-)
-
-# Icons
-install(FILES resources/icons/uperf.png
-    DESTINATION share/icons/hicolor/128x128/apps
 )
