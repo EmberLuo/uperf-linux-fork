@@ -4,9 +4,7 @@
 
 #include <string.h>
 #include <stdio.h>
-
-/* Generated header from dbus-interface.xml via gdbus-codegen.
- * For now we use manual GDBus — no code generation step needed. */
+#include <gio/gio.h>
 
 /* ----------------------------------------------------------------
  * DbusManager internal state
@@ -14,12 +12,9 @@
 
 struct DbusManager {
     GBusType          bus_type;
-    guint             owner_id;       /* DBus connection owner id */
-    guint             export_id;      /* Object export id */
-    guint             stats_timer;    /* Source ID for stats timer */
-
-    /* DBus connection (stored for signal emission) */
-    GDBusConnection  *connection;
+    guint             owner_id;
+    guint             export_id;
+    guint             stats_timer;
 
     /* Properties */
     char             *current_mode;
@@ -29,6 +24,9 @@ struct DbusManager {
     double             loads[DBUS_MAX_CPUS];
     int                nr_loads;
     gboolean           heavy_load;
+
+    /* Bus connection for signal emission */
+    GDBusConnection  *bus_conn;
 
     /* Game processes */
     GameProcessEntry  *games;
@@ -43,8 +41,8 @@ struct DbusManager {
     DbusSetModeFunc    set_mode_cb;
     void              *set_mode_ud;
 
-    /* Manual frequency overrides: -1=GPU, 0..3=CPU clusters */
-    gint64             manual_freq[5];  /* [gpu, prime, perf, eff, unknown] */
+    /* Manual frequency overrides */
+    gint64             manual_freq[5];
     gboolean           manual_active;
 };
 
@@ -118,6 +116,18 @@ static const gchar introspection_xml[] =
     "  </interface>\n"
     "</node>";
 
+/* Helper: emit a DBus signal on the bus connection */
+static void dbus_emit_signal(DbusManager *mgr, const char *signal_name, GVariant *params) {
+    if (!mgr || !mgr->bus_conn) return;
+    g_dbus_connection_emit_signal(mgr->bus_conn,
+                                  NULL,              /* destination */
+                                  "/org/uperflinux/Daemon", /* object path */
+                                  "org.uperflinux.Daemon",  /* interface */
+                                  signal_name,
+                                  params,
+                                  NULL);             /* callback */
+}
+
 /* Handle SetMode method call */
 static void handle_set_mode(GDBusConnection      *connection,
                             const gchar          *sender,
@@ -139,16 +149,6 @@ static void handle_set_mode(GDBusConnection      *connection,
         success = TRUE;
     }
 
-    /* Emit ModeChanged signal on the same connection */
-    g_dbus_connection_emit_signal(
-        connection,
-        sender,
-        object_path,
-        "org.uperflinux.Daemon",
-        "ModeChanged",
-        g_variant_new("(s)", mode),
-        NULL);
-
     g_dbus_method_invocation_return_value(invocation,
         g_variant_new("(b)", success));
 }
@@ -166,7 +166,6 @@ static void handle_reload_config(GDBusConnection      *connection,
     (void)interface_name; (void)method_name; (void)parameters; (void)user_data;
 
     log_info("DBus ReloadConfig called");
-    /* TODO: trigger config reload */
     g_dbus_method_invocation_return_value(invocation,
         g_variant_new("(b)", FALSE));
 }
@@ -212,7 +211,7 @@ static GVariant *handle_method_call(GDBusConnection      *connection,
 }
 
 /* ----------------------------------------------------------------
- * Property getters (called by GDBus when GUI queries properties)
+ * Property getters — return GVariant* for property query
  * ---------------------------------------------------------------- */
 
 static GVariant *on_get_current_mode(DbusManager *mgr) {
@@ -227,7 +226,7 @@ static GVariant *on_get_cpu_frequencies(DbusManager *mgr) {
     GVariantBuilder builder;
     g_variant_builder_init(&builder, G_VARIANT_TYPE("ad"));
     for (int i = 0; i < mgr->nr_freqs; i++)
-        g_variant_builder_add(&builder, "(d)", mgr->freqs[i]);
+        g_variant_builder_add(&builder, "d", mgr->freqs[i]);
     return g_variant_builder_end(&builder);
 }
 
@@ -235,7 +234,7 @@ static GVariant *on_get_cpu_loads(DbusManager *mgr) {
     GVariantBuilder builder;
     g_variant_builder_init(&builder, G_VARIANT_TYPE("ad"));
     for (int i = 0; i < mgr->nr_loads; i++)
-        g_variant_builder_add(&builder, "(d)", mgr->loads[i]);
+        g_variant_builder_add(&builder, "d", mgr->loads[i]);
     return g_variant_builder_end(&builder);
 }
 
@@ -248,7 +247,7 @@ static GVariant *on_get_game_processes(DbusManager *mgr) {
     g_variant_builder_init(&builder, G_VARIANT_TYPE("a(ii:sssss)"));
     for (int i = 0; i < mgr->nr_games; i++) {
         g_variant_builder_add(&builder, "(ii(sssss))",
-                              mgr->games[i].pid, 0,  /* pid, priority */
+                              mgr->games[i].pid, 0,
                               mgr->games[i].comm ?: "",
                               mgr->games[i].cmdline ?: "",
                               mgr->games[i].package ?: "",
@@ -270,32 +269,9 @@ static GVariant *on_get_manual_freq_override(DbusManager *mgr) {
     GVariantBuilder builder;
     g_variant_builder_init(&builder, G_VARIANT_TYPE("a(x)"));
     for (int i = 0; i < 5; i++) {
-        g_variant_builder_add(&builder, "(ix)", i, mgr->manual_freq[i]);
+        g_variant_builder_add(&builder, "x", mgr->manual_freq[i]);
     }
     return g_variant_builder_end(&builder);
-}
-
-/* Property query dispatcher */
-static GVariant *on_get_property(GObject         *object,
-                                  guint            prop_id,
-                                  GValue          *value,
-                                  GParamSpec      *pspec,
-                                  gpointer         user_data) {
-    DbusManager *mgr = (DbusManager *)user_data;
-
-    switch (prop_id) {
-        case 1: g_value_set_string(value, on_get_current_mode(mgr)); break;
-        case 2: g_value_set_string(value, on_get_current_scene(mgr)); break;
-        case 3: g_value_set_boxed(value, on_get_cpu_frequencies(mgr)); break;
-        case 4: g_value_set_boxed(value, on_get_cpu_loads(mgr)); break;
-        case 5: g_value_set_boolean(value, on_get_is_heavy_load(mgr)); break;
-        case 6: g_value_set_boxed(value, on_get_game_processes(mgr)); break;
-        case 7: g_value_set_int32(value, on_get_max_temperature(mgr)); break;
-        case 8: g_value_set_string(value, on_get_thermal_state(mgr)); break;
-        case 9: g_value_set_boxed(value, on_get_manual_freq_override(mgr)); break;
-        default: return NULL;
-    }
-    return NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -317,36 +293,53 @@ enum {
 
 static GParamSpec *properties[N_PROPS] = { NULL, };
 
+/* Property query — simplified, no GObject subclassing needed */
+static void on_get_property(GObject         *object,
+                            guint            prop_id,
+                            GValue          *value,
+                            GParamSpec      *pspec) {
+    /* This is called by GDBus when property values are queried.
+     * The 'object' is actually our DbusManager cast to GObject*,
+     * stored via g_object_set_data. */
+    DbusManager *mgr = (DbusManager *)g_object_get_data(G_OBJECT(object), "uperf-dbus-mgr");
+    if (!mgr) return;
+    (void)pspec;
+
+    switch (prop_id) {
+        case 1: g_value_set_string(value, mgr->current_mode ? mgr->current_mode : "balance"); break;
+        case 2: g_value_set_string(value, mgr->current_scene ? mgr->current_scene : "idle"); break;
+        case 3: g_value_set_boxed(value, on_get_cpu_frequencies(mgr)); break;
+        case 4: g_value_set_boxed(value, on_get_cpu_loads(mgr)); break;
+        case 5: g_value_set_boolean(value, mgr->heavy_load); break;
+        case 6: g_value_set_boxed(value, on_get_game_processes(mgr)); break;
+        case 7: g_value_set_int(value, mgr->max_temp_millidegC); break;
+        case 8: g_value_set_string(value, mgr->thermal_state_str[0] ? mgr->thermal_state_str : "normal"); break;
+        case 9: g_value_set_boxed(value, on_get_manual_freq_override(mgr)); break;
+        default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
+    }
+}
+
 /* ----------------------------------------------------------------
  * Stats update timer callback (emits StatsUpdated every 500ms)
  * ---------------------------------------------------------------- */
 
 static gboolean stats_timer_callback(gpointer user_data) {
     DbusManager *mgr = (DbusManager *)user_data;
-    if (!mgr || !mgr->connection) return G_SOURCE_CONTINUE;
 
-    /* Build frequencies array */
     GVariantBuilder freq_builder;
     g_variant_builder_init(&freq_builder, G_VARIANT_TYPE("ad"));
     for (int i = 0; i < mgr->nr_freqs; i++)
-        g_variant_builder_add(&freq_builder, "(d)", mgr->freqs[i]);
+        g_variant_builder_add(&freq_builder, "d", mgr->freqs[i]);
 
-    /* Build loads array */
     GVariantBuilder load_builder;
     g_variant_builder_init(&load_builder, G_VARIANT_TYPE("ad"));
     for (int i = 0; i < mgr->nr_loads; i++)
-        g_variant_builder_add(&load_builder, "(d)", mgr->loads[i]);
+        g_variant_builder_add(&load_builder, "d", mgr->loads[i]);
 
-    g_dbus_connection_emit_signal(
-        mgr->connection,
-        NULL,   /* sender — NULL = anonymous */
-        "/org/uperflinux/Daemon",
-        "org.uperflinux.Daemon",
-        "StatsUpdated",
+    dbus_emit_signal(mgr, "StatsUpdated",
         g_variant_new("(aad)",
             g_variant_builder_end(&freq_builder),
-            g_variant_builder_end(&load_builder)),
-        NULL);
+            g_variant_builder_end(&load_builder)));
 
     return G_SOURCE_CONTINUE;
 }
@@ -355,7 +348,7 @@ static gboolean stats_timer_callback(gpointer user_data) {
  * Public API
  * ---------------------------------------------------------------- */
 
-DbusManager *dbus_manager_new(GBusType bus_type) {
+DbusManager *dbus_manager_new(GType bus_type) {
     DbusManager *mgr = calloc(1, sizeof(*mgr));
     if (!mgr) return NULL;
 
@@ -373,10 +366,10 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
     memset(mgr->manual_freq, 0, sizeof(mgr->manual_freq));
     mgr->manual_active = FALSE;
 
-    /* Connect to bus */
+    /* Connect to bus synchronously */
     GError *err = NULL;
-    mgr->connection = g_bus_wait_sync(bus_type, -1, NULL, &err);
-    if (!mgr->connection) {
+    mgr->bus_conn = g_bus_get_sync(bus_type, NULL, &err);
+    if (!mgr->bus_conn) {
         log_error("DBus: failed to connect to bus: %s", err->message);
         g_error_free(err);
         free(mgr);
@@ -403,18 +396,15 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
         g_param_spec_boxed("GameProcesses", "Game Processes", "Detected game processes",
                            G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
     properties[PROP_MAX_TEMPERATURE] =
-        g_param_spec_int32("MaxTemperature", "Max Temperature", "Highest thermal zone temperature (millidegC)",
-                         G_MININT32, G_MAXINT32, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+        g_param_spec_int("MaxTemperature", "Max Temperature", "Highest thermal zone temperature (millidegC)",
+                         -273000, G_MAXINT32, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
     properties[PROP_THERMAL_STATE] =
         g_param_spec_string("ThermalState", "Thermal State", "Current thermal state",
                             "normal", G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
     properties[PROP_MANUAL_FREQ_OVERRIDE] =
         g_param_spec_boxed("ManualFreqOverride", "Manual Freq Override",
-                           "Array of (index, freq_hz) tuples for manual overrides",
+                           "Array of freq_hz values for manual overrides",
                            G_TYPE_VARIANT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
-
-    /* Object export id — reserved for future GDBusObjectSkeleton use */
-    mgr->export_id = 0;
 
     log_info("DBus manager created on %s bus",
              bus_type == G_BUS_TYPE_SYSTEM ? "system" : "session");
@@ -423,19 +413,9 @@ DbusManager *dbus_manager_new(GBusType bus_type) {
 
 void dbus_manager_free(DbusManager *mgr) {
     if (!mgr) return;
-
-    /* Cancel stats timer */
-    if (mgr->stats_timer > 0) {
-        g_source_remove(mgr->stats_timer);
-        mgr->stats_timer = 0;
+    if (mgr->bus_conn) {
+        g_object_unref(mgr->bus_conn);
     }
-
-    /* Unref connection */
-    if (mgr->connection) {
-        g_object_unref(mgr->connection);
-        mgr->connection = NULL;
-    }
-
     g_free(mgr->current_mode);
     g_free(mgr->current_scene);
     if (mgr->games) {
@@ -465,7 +445,7 @@ void dbus_manager_set_mode(DbusManager *mgr, const char *mode) {
     }
 
     /* Emit ModeChanged signal */
-    /* Note: full signal emission requires GDBusInterfaceSkeleton */
+    dbus_emit_signal(mgr, "ModeChanged", g_variant_new("(s)", mode));
 }
 
 void dbus_manager_set_scene(DbusManager *mgr, const char *scene) {
@@ -473,6 +453,7 @@ void dbus_manager_set_scene(DbusManager *mgr, const char *scene) {
     g_free(mgr->current_scene);
     mgr->current_scene = g_strdup(scene);
     log_debug("DBus scene set to: %s", scene);
+    dbus_emit_signal(mgr, "SceneChanged", g_variant_new("(s)", scene));
 }
 
 void dbus_manager_update_frequencies(DbusManager *mgr,
@@ -498,6 +479,8 @@ void dbus_manager_set_heavy_load(DbusManager *mgr, gboolean active) {
     if (mgr->heavy_load != active) {
         mgr->heavy_load = active;
         log_info("DBus heavy load state changed: %s", active ? "ACTIVE" : "inactive");
+        dbus_emit_signal(mgr, "HeavyLoadStateChanged",
+            g_variant_new("(b)", active));
     }
 }
 
@@ -539,7 +522,6 @@ gboolean dbus_manager_emit_stats(DbusManager *mgr,
     if (!mgr) return FALSE;
     dbus_manager_update_frequencies(mgr, freqs, nr_clusters);
     dbus_manager_update_loads(mgr, loads, nr_cpus);
-    /* Signal emission handled by GDBus when properties change */
     return TRUE;
 }
 
@@ -559,7 +541,7 @@ void dbus_manager_set_thermal_state(DbusManager *mgr, int max_temp_millidegC,
         strncpy(mgr->thermal_state_str, state_str, sizeof(mgr->thermal_state_str) - 1);
         mgr->thermal_state_str[sizeof(mgr->thermal_state_str) - 1] = '\0';
     }
-    log_debug("DBus thermal state: %d.%03d°C %s",
+    log_debug("DBus thermal state: %d.%03d C %s",
               max_temp_millidegC / 1000, max_temp_millidegC % 1000,
               state_str ? state_str : "unknown");
 }
@@ -569,7 +551,6 @@ void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_nam
     if (!mgr || !app_name || !mode) return;
     log_info("DBus SetGameMode: pid=%d app='%s' mode='%s'", pid, app_name, mode);
 
-    /* Find or add game entry */
     for (int i = 0; i < mgr->nr_games; i++) {
         if (mgr->games[i].pid == pid) {
             g_free(mgr->games[i].mode);
@@ -577,7 +558,6 @@ void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_nam
             return;
         }
     }
-    /* New entry */
     if (mgr->nr_games < mgr->games_cap) {
         int idx = mgr->nr_games++;
         mgr->games[idx].pid = pid;
@@ -589,18 +569,15 @@ void dbus_manager_set_game_mode(DbusManager *mgr, pid_t pid, const char *app_nam
 gboolean dbus_manager_set_manual_freq(DbusManager *mgr, int cluster, gint64 freq_hz) {
     if (!mgr) return FALSE;
 
-    /* Validate cluster index: -1=GPU, 0..3=CPU clusters */
     if (cluster < -1 || cluster > 3) {
         log_warn("Manual freq: invalid cluster %d", cluster);
         return FALSE;
     }
 
-    /* freq_hz=0 means release override */
     if (freq_hz == 0) {
-        int idx = cluster + 1;  /* -1+1=0=gpu index */
+        int idx = cluster + 1;
         mgr->manual_freq[idx] = 0;
         mgr->manual_active = FALSE;
-        /* Check if any override remains */
         for (int i = 0; i < 5; i++) {
             if (mgr->manual_freq[i] > 0) {
                 mgr->manual_active = TRUE;

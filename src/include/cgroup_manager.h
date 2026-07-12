@@ -1,4 +1,5 @@
 #ifndef UPERF_CGROUP_MANAGER_H
+#include <sys/types.h>
 #define UPERF_CGROUP_MANAGER_H
 
 #include <stdint.h>

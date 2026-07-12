@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "cgroup_manager.h"
 #include "log.h"
 

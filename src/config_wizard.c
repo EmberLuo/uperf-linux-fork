@@ -16,7 +16,7 @@
 #include <errno.h>
 
 /* Bitops helpers for ioctl bitmasks */
-#define ABSBIT_WORDS (NBITS(EV_ABS) * NBITS(ABS_MAX))
+#define ABSBIT_WORDS (((EV_ABS + 31) / 32) * ((ABS_MAX + 31) / 32))
 static inline int test_bit(int nr, const unsigned long *addr) {
     return (addr[nr / (sizeof(unsigned long) * 8)] >> (nr % (sizeof(unsigned long) * 8))) & 1;
 }
@@ -347,7 +347,7 @@ static void detect_touchscreen(FILE *fp) {
             int fd = open(evdev_path, O_RDONLY);
             if (fd >= 0) {
                 /* Check for ABS_MT_POSITION_X (0x35) — definitive touchscreen indicator */
-                unsigned long absbit[ABSBIT_WORDS] = {0};
+                unsigned long absbit[ABSBIT_WORDS]; memset(absbit, 0, sizeof(absbit));
                 if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbit)), absbit) == 0) {
                     if (test_bit(ABS_MT_POSITION_X, absbit) ||
                         test_bit(ABS_MT_POSITION_Y, absbit)) {

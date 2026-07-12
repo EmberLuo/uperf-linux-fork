@@ -15,7 +15,7 @@ typedef struct DbusManager DbusManager;
 /* Create and register the DBus manager.
  * bus_type: G_BUS_TYPE_SYSTEM or G_BUS_TYPE_SESSION
  * Returns NULL on failure. */
-DbusManager *dbus_manager_new(GBusType bus_type);
+DbusManager *dbus_manager_new(GType bus_type);
 
 /* Free DBus manager and unregister from bus. */
 void dbus_manager_free(DbusManager *mgr);

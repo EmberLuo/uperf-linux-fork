@@ -10,6 +10,14 @@
 #include <unistd.h>
 #include <errno.h>
 
+#ifndef MAX_PATH_LEN
+#define MAX_PATH_LEN 256
+#endif
+
+#ifndef MAX_NAME_LEN
+#define MAX_NAME_LEN 64
+#endif
+
 /* Internal thermal manager state */
 struct ThermalManager {
     ThermalPolicy policy;
@@ -143,7 +151,7 @@ int thermal_manager_discover_zones(ThermalManager *tm) {
         zone->zone_type = classify_zone(type_str);
         zone->valid = true;
 
-        log_debug("thermal: zone[%d] %s (%s) = %d.%03d°C",
+        log_debug("thermal: zone[%d] %s (%s) = %d.%03d C",
                    zone->id, zone->name, zone->type,
                    temp_milli / 1000, temp_milli % 1000);
 
@@ -190,7 +198,7 @@ ThermalState thermal_manager_update(ThermalManager *tm) {
 
     /* Log state changes */
     if (state != tm->current_state) {
-        log_info("Thermal state changed: %s → %s (%d°C max)",
+        log_info("Thermal state changed: %s -> %s (%d C max)",
                  thermal_state_to_string(tm->current_state),
                  thermal_state_to_string(state),
                  tm->max_temp / 1000);
@@ -232,7 +240,7 @@ float thermal_manager_get_reduction_factor(const ThermalManager *tm) {
             /* Significant reduction: reduce by 30-50% */
             /* Scale based on how far above throttle_temp we are */
             if (tm->max_temp >= tm->policy.critical_temp - 5000) {
-                return 0.5f;  /* Near critical — aggressive reduction */
+                return 0.5f;  /* Near critical -- aggressive reduction */
             }
             return 0.3f;
 
@@ -276,19 +284,19 @@ const char *thermal_state_to_string(ThermalState state) {
 ThermalPolicy thermal_default_policy(void) {
     /* SM8550 / Snapdragon 8 Gen 2 typical thermal thresholds */
     ThermalPolicy policy = {0};
-    policy.warn_temp       = 70000;   /* 70°C */
-    policy.throttle_temp   = 80000;   /* 80°C */
-    policy.critical_temp   = 95000;   /* 95°C */
-    policy.recovery_temp   = 75000;   /* 75°C */
+    policy.warn_temp       = 70000;   /* 70 C */
+    policy.throttle_temp   = 80000;   /* 80 C */
+    policy.critical_temp   = 95000;   /* 95 C */
+    policy.recovery_temp   = 75000;   /* 75 C */
     return policy;
 }
 
 ThermalPolicy thermal_conservative_policy(void) {
     /* More conservative thresholds for battery-powered devices */
     ThermalPolicy policy = {0};
-    policy.warn_temp       = 60000;   /* 60°C */
-    policy.throttle_temp   = 70000;   /* 70°C */
-    policy.critical_temp   = 85000;   /* 85°C */
-    policy.recovery_temp   = 65000;   /* 65°C */
+    policy.warn_temp       = 60000;   /* 60 C */
+    policy.throttle_temp   = 70000;   /* 70 C */
+    policy.critical_temp   = 85000;   /* 85 C */
+    policy.recovery_temp   = 65000;   /* 65 C */
     return policy;
 }

@@ -5,10 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <math.h>
+#include <dirent.h>
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
 #include <linux/input.h>
@@ -54,7 +55,7 @@ struct InputMonitor {
 /* Calculate Euclidean distance between two points */
 static float dist(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     int dx = x2 - x1;
-    int dy = y2 - y1;
+    int dy = x2 - x1;
     return sqrtf((float)(dx * dx + dy * dy));
 }
 
@@ -98,8 +99,8 @@ InputMonitor *input_monitor_new(float swipe_thd, float gesture_thd_x,
     im->gesture_delay_time = gesture_delay_time;
     im->screen_width = screen_width;
     im->screen_height = screen_height;
-    im->screen_diagonal = sqrtf(screen_width * screen_width +
-                                screen_height * screen_height);
+    im->screen_diagonal = sqrtf((float)(screen_width * screen_width +
+                                screen_height * screen_height));
 
     /* Initialize tracker */
     memset(&im->tracker, 0, sizeof(im->tracker));
@@ -217,11 +218,12 @@ void input_monitor_set_screen_size(InputMonitor *im, int w, int h) {
     if (!im) return;
     im->screen_width = w;
     im->screen_height = h;
-    im->screen_diagonal = sqrtf(w * w + h * h);
+    im->screen_diagonal = sqrtf((float)(w * w + h * h));
 }
 
-static uint64_t timespec_to_ms(const struct timespec *ts) {
-    return (uint64_t)ts->tv_sec * 1000 + ts->tv_nsec / 1000000;
+/* Convert timeval to milliseconds (evdev uses struct timeval, not timespec) */
+static uint64_t timeval_to_ms(const struct timeval *tv) {
+    return (uint64_t)tv->tv_sec * 1000 + tv->tv_usec / 1000;
 }
 
 int input_monitor_poll(InputMonitor *im, InputEvent *events, int max_events) {
@@ -254,7 +256,7 @@ int input_monitor_poll(InputMonitor *im, InputEvent *events, int max_events) {
         size_t nevents = n / sizeof(struct input_event);
         for (size_t i = 0; i < nevents; i++) {
             struct input_event *ev = &ie[i];
-            uint64_t ts_ms = timespec_to_ms(&ev->time);
+            uint64_t ts_ms = timeval_to_ms(&ev->time);
 
             switch (ev->type) {
                 case EV_ABS:
@@ -282,7 +284,7 @@ int input_monitor_poll(InputMonitor *im, InputEvent *events, int max_events) {
 
                         case ABS_MT_TRACKING_ID:
                             if (ev->value == -1 && im->tracker.touch_down) {
-                                /* Touch released — classify event */
+                                /* Touch released -> classify event */
                                 im->tracker.touch_down = false;
 
                                 float distance_ratio = im->tracker.total_distance /
@@ -346,7 +348,7 @@ int input_monitor_poll(InputMonitor *im, InputEvent *events, int max_events) {
                     break;
 
                 case EV_SYN:
-                    /* Sync event — increment sample count */
+                    /* Sync event -> increment sample count */
                     im->tracker.sample_count++;
                     im->tracker.last_ts_ms = ts_ms;
                     break;

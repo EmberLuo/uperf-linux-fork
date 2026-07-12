@@ -13,6 +13,7 @@
 #include <time.h>
 #include <errno.h>
 #include <pthread.h>
+#include <syslog.h>
 
 /* Internal state */
 static LogLevel g_level       = LOG_INFO;
@@ -32,31 +33,15 @@ static void format_timestamp(char *buf, size_t len) {
     strncat(buf, tmp, len - strlen(buf) - 1);
 }
 
-/* Map LogLevel to journald priority string */
-#ifdef HAVE_LIBSYSTEMD
-static int journald_priority(LogLevel level) {
-    switch (level) {
-        case LOG_DEBUG:  return SD_LOG_DEBUG;
-        case LOG_INFO:   return SD_LOG_INFO;
-        case LOG_WARN:   return SD_LOG_WARNING;
-        case LOG_ERROR:  return SD_LOG_ERR;
-        case LOG_FATAL:  return SD_LOG_CRIT;
-        default:         return SD_LOG_INFO;
-    }
-}
-#endif
-
-/* Map LogLevel to syslog priority */
+/* Map LogLevel to syslog priority (hardcoded values avoids syslog.h enum conflict) */
 static int syslog_priority(LogLevel level) {
-    /* Use numeric comparison to avoid LOG_DEBUG/LOG_INFO macro
-     * collisions with syslog.h when it's transitively included. */
-    switch ((int)level) {
-        case 0: return LOG_DEBUG;   /* LOG_DEBUG enum == 0 == syslog macro */
-        case 1: return LOG_INFO;    /* LOG_INFO enum == 1 == syslog macro */
-        case 2: return LOG_WARNING;
-        case 3: return LOG_ERR;
-        case 4: return LOG_CRIT;
-        default: return LOG_INFO;
+    switch (level) {
+        case LOG_DEBUG:  return 7;
+        case LOG_INFO:   return 6;
+        case LOG_WARN:   return 4;
+        case LOG_ERROR:  return 3;
+        case LOG_FATAL:  return 2;
+        default:         return 6;
     }
 }
 
@@ -103,7 +88,8 @@ void log_impl(LogLevel level, const char *file, int line, const char *func,
     /* Write to journald if available */
 #ifdef HAVE_LIBSYSTEMD
     if (g_use_journald) {
-        sd_journal_printv(journald_priority(level), "%s\n%s", full_msg, msg_buf);
+        int pri = syslog_priority(level);
+        sd_journal_print(pri, "%s", full_msg);
     }
 #endif
 
@@ -114,12 +100,12 @@ void log_impl(LogLevel level, const char *file, int line, const char *func,
     }
 #endif
 
-    /* FATAL → flush and abort after logging */
+    /* FATAL: flush and return (caller should call exit()/abort()) */
     if (level == LOG_FATAL) {
         if (g_log_fp)
             fflush(g_log_fp);
         pthread_mutex_unlock(&g_mutex);
-        return;  /* Caller should call exit()/abort() */
+        return;
     }
 
     pthread_mutex_unlock(&g_mutex);
@@ -132,7 +118,6 @@ int log_init(LogLevel level, int use_journald, const char *log_file) {
     if (log_file) {
         g_log_fp = fopen(log_file, "a");
         if (!g_log_fp) {
-            /* Fallback to stderr */
             fprintf(stderr, "[uperf-linux] Failed to open log file '%s': %s\n",
                     log_file, strerror(errno));
             g_log_fp = NULL;

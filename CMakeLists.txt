@@ -19,15 +19,6 @@ option(BUILD_TESTS "Build tests" ON)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONC REQUIRED json-c)
 
-# Detect json_parse_file availability (deprecated in json-c 0.17+)
-include(CheckSymbolExists)
-check_symbol_exists(json_parse_file "json-c/json.h" HAVE_JSON_PARSE_FILE)
-if(HAVE_JSON_PARSE_FILE)
-    message(STATUS "json_parse_file found in json-c")
-else()
-    message(STATUS "json_parse_file not found, using fallback")
-endif()
-
 # GLib for DBus integration (daemon side)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0>=2.56)
@@ -80,7 +71,7 @@ target_include_directories(uperf-linux PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
 )
 
-target_link_libraries(uperf-linux PRIVATE
+target_link_libraries(uperf-linux PRIVATE m gio-2.0 dbus-1 gobject-2.0
     ${JSONC_LIBRARIES}
     ${GLIB2_LIBRARIES}
     pthread
@@ -93,7 +84,7 @@ if(LIBSYSTEMD_LIBRARY AND LIBSYSTEMD_INCLUDE_DIR)
 endif()
 
 # ---- CLI tool ----
-add_executable(uperfctl src/cli.c)
+add_executable(uperfctl src/cli.c src/game_scanner.c src/log.c)
 target_include_directories(uperfctl PRIVATE
     ${JSONC_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include

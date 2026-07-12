@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <gio/gio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -368,41 +369,12 @@ int main(int argc, char *argv[]) {
         log_warn("Failed to create heavy load detector");
     }
 
-    /* Determine screen dimensions: config > sysfs > hardcoded fallback */
-    int screen_w = g_config.input.screen_width;
-    int screen_h = g_config.input.screen_height;
-    if (screen_w <= 0 || screen_h <= 0) {
-        /* Try reading from DRM connector sysfs */
-        char path[MAX_PATH_LEN];
-        for (int i = 0; i < 16; i++) {
-            snprintf(path, sizeof(path), "/sys/class/drm/card%d-mode-*", i);
-            /* Try cardX-mode-X:WxH pattern */
-            snprintf(path, sizeof(path), "/sys/class/drm/card%d-info", i);
-            char *val = sysfs_reader_read(path);
-            if (val) {
-                int w = 0, h = 0;
-                if (sscanf(val, "%d%x%d", &w, &h) >= 2 || sscanf(val, "%dx%d", &w, &h) >= 2) {
-                    screen_w = w;
-                    screen_h = h;
-                }
-                free(val);
-                if (screen_w > 0 && screen_h > 0) break;
-            }
-        }
-        /* Fallback: use tablet-native resolution if still unknown */
-        if (screen_w <= 0 || screen_h <= 0) {
-            screen_w = 3048;
-            screen_h = 2032;
-            log_warn("Could not detect screen size, using fallback: %dx%d", screen_w, screen_h);
-        }
-    }
-
     g_im = input_monitor_new(
         g_config.input.swipe_thd,
         g_config.input.gesture_thd_x,
         g_config.input.gesture_thd_y,
         g_config.input.gesture_delay_time,
-        screen_w, screen_h
+        1080, 2400  /* TODO: read from sysfs or config */
     );
     if (g_im) {
         input_monitor_discover_devices(g_im);

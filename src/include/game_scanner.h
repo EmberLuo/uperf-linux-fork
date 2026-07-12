@@ -7,6 +7,7 @@
 
 /* Maximum length of a process command line */
 #define CMDLINE_MAX 4096
+#define MAX_PATTERNS  64
 
 /* Detected process entry */
 typedef struct {

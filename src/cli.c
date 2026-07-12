@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "log.h"
 #include "config.h"
+#include "game_scanner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +9,10 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <ctype.h>
+#include <errno.h>
 
 static const char *RUN_DIR = "/run/uperf-linux";
 static const char *CONFIG_DIR = "/etc/uperf-linux";
@@ -32,7 +37,6 @@ static void print_usage(const char *prog) {
 }
 
 static int cmd_status(void) {
-    /* Read current power mode from switch inode */
     char mode_path[MAX_PATH_LEN];
     snprintf(mode_path, sizeof(mode_path), "%s/cur_powermode", RUN_DIR);
 
@@ -45,10 +49,9 @@ static int cmd_status(void) {
         }
         fclose(fp);
     } else {
-        printf("Power mode: (not set — using default)\n");
+        printf("Power mode: (not set -- using default)\n");
     }
 
-    /* Try to read current CPU frequencies */
     printf("\nCPU frequencies:\n");
     for (int cpu = 0; cpu < 8; cpu++) {
         char path[MAX_PATH_LEN];
@@ -63,14 +66,13 @@ static int cmd_status(void) {
         }
     }
 
-    /* Check for running games */
     printf("\nKnown game processes:\n");
     DIR *proc = opendir("/proc");
     if (proc) {
         struct dirent *ent;
         int count = 0;
         while ((ent = readdir(proc)) && count < 16) {
-            if (!isdigit(ent->d_name[0])) continue;
+            if (!isdigit((unsigned char)ent->d_name[0])) continue;
             char comm_path[MAX_PATH_LEN];
             snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", ent->d_name);
             FILE *cf = fopen(comm_path, "r");
@@ -78,7 +80,6 @@ static int cmd_status(void) {
                 char comm[64];
                 if (fgets(comm, sizeof(comm), cf)) {
                     comm[strcspn(comm, "\n")] = '\0';
-                    /* Simple heuristic: game processes tend to have longer names */
                     if (strlen(comm) > 4) {
                         printf("  PID %s: %s\n", ent->d_name, comm);
                         count++;
@@ -130,12 +131,11 @@ static int cmd_game_list(void) {
     struct dirent *ent;
     int count = 0;
     while ((ent = readdir(proc)) && count < MAX_GAMES) {
-        if (!isdigit(ent->d_name[0])) continue;
+        if (!isdigit((unsigned char)ent->d_name[0])) continue;
 
         pid_t pid = atoi(ent->d_name);
         if (pid < 2) continue;
 
-        /* Read comm */
         char comm_path[MAX_PATH_LEN];
         char comm[64];
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
@@ -145,7 +145,6 @@ static int cmd_game_list(void) {
         comm[strcspn(comm, "\n")] = '\0';
         fclose(fp);
 
-        /* Read cmdline */
         char cmdline[512] = {0};
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/cmdline", pid);
         fp = fopen(comm_path, "r");
@@ -156,7 +155,6 @@ static int cmd_game_list(void) {
             fclose(fp);
         }
 
-        /* Check against game patterns */
         if (game_scanner_match(comm, cmdline)) {
             printf("  [%d] PID %-6d  %-16s  %s\n",
                    ++count, pid, comm, cmdline);
@@ -170,9 +168,6 @@ static int cmd_game_list(void) {
     printf("\nTotal: %d game process(es)\n", count);
     return 0;
 }
-
-/* Forward declare game_scanner_match — we need to include the header */
-#include "game_scanner.h"
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -210,7 +205,6 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(cmd, "detect") == 0) {
-        /* Delegate to the config wizard */
         static const char *wizard_path = "/usr/local/bin/uperf-wizard";
         char cmd_buf[512];
         snprintf(cmd_buf, sizeof(cmd_buf), "exec %s detect 2>&1", wizard_path);
@@ -242,13 +236,12 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        /* Direct sysfs write (no Qt/DBus dependency for CLI) */
         char path[MAX_PATH_LEN];
         char value[32];
         snprintf(value, sizeof(value), "%lld", freq_hz);
 
         FILE *fp = NULL;
-        snprintf(value, sizeof(value), "%lld", freq_hz);
+        int found = 0;
 
         if (cluster == -1) {
             /* GPU: try common devfreq paths */
@@ -257,7 +250,6 @@ int main(int argc, char *argv[]) {
                 "/sys/class/devfreq/soc\:qcom\:gpu/max_freq",
                 NULL
             };
-            int found = 0;
             for (int p = 0; gpu_paths[p]; p++) {
                 snprintf(path, sizeof(path), "%s", gpu_paths[p]);
                 fp = fopen(path, "w");
@@ -268,13 +260,12 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
         } else {
-            /* CPU: write to cpufreq scaling_max_freq */
             snprintf(path, sizeof(path),
                      "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq",
                      cluster);
+            fp = fopen(path, "w");
         }
 
-        FILE *fp = fopen(path, "w");
         if (!fp) {
             fprintf(stderr, "Error: cannot write to %s: %s\n", path, strerror(errno));
             fprintf(stderr, "Hint: run as root\n");
@@ -306,9 +297,6 @@ int main(int argc, char *argv[]) {
         printf("\nGPU frequency:\n");
         char gpu_path[MAX_PATH_LEN];
         snprintf(gpu_path, sizeof(gpu_path),
-                 "/sys/class/devfreq/soc:qcom:gpu/msm_dvfsc_score");
-        /* Try cur_freq first */
-        snprintf(gpu_path, sizeof(gpu_path),
                  "/sys/class/devfreq/soc:qcom:gpu/cur_freq");
         FILE *f = fopen(gpu_path, "r");
         if (f) {
@@ -317,7 +305,7 @@ int main(int argc, char *argv[]) {
                 printf("  GPU: %lld Hz (%.2f MHz)\n", freq, freq / 1e6);
             fclose(f);
         } else {
-            printf("  GPU: (cannot read — devfreq node not found)\n");
+            printf("  GPU: (cannot read -- devfreq node not found)\n");
         }
         return 0;
     }

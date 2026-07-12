@@ -1,81 +1,20 @@
 #include "config.h"
 #include "log.h"
+#include "state_machine.h"
 
 #include <json-c/json.h>
-#include <json-c/json_tokener.h>
+#include <json-c/json_util.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <errno.h>
-
-/* json_parse_file is deprecated/removed in json-c 0.17+.
- * Provide a fallback that parses JSON from a file path. */
-#ifndef HAVE_JSON_PARSE_FILE
-extern struct json_object *json_parse_file(const char *path, char **error_msg);
-#endif
-
-#ifdef HAVE_JSON_PARSE_FILE
-/* Use the system json_parse_file if available */
-#define USE_SYSTEM_JSON_PARSE_FILE 1
-#else
-/* Fallback: read file content and parse with tokener */
-static struct json_object *json_parse_file_fallback(const char *path, char **error_msg) {
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
-        if (error_msg) {
-            *error_msg = strdup(strerror(errno));
-        }
-        return NULL;
-    }
-
-    fseek(fp, 0, SEEK_END);
-    long len = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    char *buf = malloc(len + 1);
-    if (!buf) {
-        fclose(fp);
-        if (error_msg) {
-            *error_msg = strdup("malloc failed");
-        }
-        return NULL;
-    }
-
-    if ((long)fread(buf, 1, len, fp) != len) {
-        if (error_msg) {
-            *error_msg = strdup("failed to read file");
-        }
-        free(buf);
-        fclose(fp);
-        return NULL;
-    }
-    buf[len] = '\0';
-    fclose(fp);
-
-    struct json_tokener *tok = json_tokener_new();
-    struct json_object *obj = json_tokener_parse_ex(tok, buf, len);
-    free(buf);
-
-    if (tok && obj) {
-        enum json_tokener_error terr = json_tokener_get_error(tok);
-        if (terr != json_tokener_continue) {
-            if (error_msg) {
-                *error_msg = strdup(json_tokener_error_desc(terr));
-            }
-            json_object_put(obj);
-            obj = NULL;
-        }
-    }
-
-    json_tokener_free(tok);
-    return obj;
-}
-#endif
+#include <fcntl.h>
+#include <unistd.h>
 
 /* ----------------------------------------------------------------
- * JSON parsing helpers
+ * JSON parsing helpers (fixed for json-c 0.19 API)
  * ---------------------------------------------------------------- */
 
 static int parse_int_field(struct json_object *obj, const char *field, int *out) {
@@ -86,7 +25,7 @@ static int parse_int_field(struct json_object *obj, const char *field, int *out)
     return 0;
 }
 
-static double parse_double_field(struct json_object *obj, const char *field, double *out) {
+static int parse_double_field(struct json_object *obj, const char *field, double *out) {
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
         return -1;
@@ -94,13 +33,21 @@ static double parse_double_field(struct json_object *obj, const char *field, dou
     return 0;
 }
 
-static const char *parse_string_field(struct json_object *obj, const char *field,
-                                       const char **out) {
+/* Helper: parse a double field into a float variable */
+static int parse_float_field(struct json_object *obj, const char *field, float *out) {
+    double tmp;
+    int rc = parse_double_field(obj, field, &tmp);
+    if (rc == 0) *out = (float)tmp;
+    return rc;
+}
+
+/* Parse a string field safely */
+static int parse_string_field(struct json_object *obj, const char *field, const char **out) {
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
-        return "missing";
+        return -1;
     *out = json_object_get_string(jo);
-    return NULL;  /* OK */
+    return 0;
 }
 
 static bool parse_bool_field(struct json_object *obj, const char *field, bool def) {
@@ -108,6 +55,20 @@ static bool parse_bool_field(struct json_object *obj, const char *field, bool de
     if (!json_object_object_get_ex(obj, field, &jo))
         return def;
     return json_object_get_boolean(jo);
+}
+
+/* Map SceneState to StatePresets member pointer */
+static ActionParams *get_state_action(StatePresets *sp, SceneState scene) {
+    switch (scene) {
+        case SCENE_IDLE:      return &sp->idle;
+        case SCENE_TOUCH:     return &sp->touch;
+        case SCENE_TRIGGER:   return &sp->trigger;
+        case SCENE_GESTURE:   return &sp->gesture;
+        case SCENE_JUNK:      return &sp->junk;
+        case SCENE_SWITCH:    return &sp->switch_;
+        case SCENE_BOOST:     return &sp->boost;
+        default:              return &sp->global;
+    }
 }
 
 /* ----------------------------------------------------------------
@@ -142,16 +103,16 @@ static int parse_power_model(struct json_object *mod_obj, Config *cfg) {
             log_error("powerModel[%d]: missing 'nr'", i);
             return -1;
         }
-        if (parse_double_field(entry, "typicalPower", &pm->typical_power_w) < 0)
-            pm->typical_power_w = 1.0;
-        if (parse_double_field(entry, "typicalFreq", &pm->typical_freq_mhz) < 0)
-            pm->typical_freq_mhz = 1000.0;
-        if (parse_double_field(entry, "sweetFreq", &pm->sweet_freq_mhz) < 0)
-            pm->sweet_freq_mhz = pm->typical_freq_mhz * 0.7;
-        if (parse_double_field(entry, "plainFreq", &pm->plain_freq_mhz) < 0)
-            pm->plain_freq_mhz = pm->typical_freq_mhz * 0.5;
-        if (parse_double_field(entry, "freeFreq", &pm->free_freq_mhz) < 0)
-            pm->free_freq_mhz = pm->typical_freq_mhz * 0.25;
+        if (parse_float_field(entry, "typicalPower", &pm->typical_power_w) < 0)
+            pm->typical_power_w = 1.0f;
+        if (parse_float_field(entry, "typicalFreq", &pm->typical_freq_mhz) < 0)
+            pm->typical_freq_mhz = 1000.0f;
+        if (parse_float_field(entry, "sweetFreq", &pm->sweet_freq_mhz) < 0)
+            pm->sweet_freq_mhz = pm->typical_freq_mhz * 0.7f;
+        if (parse_float_field(entry, "plainFreq", &pm->plain_freq_mhz) < 0)
+            pm->plain_freq_mhz = pm->typical_freq_mhz * 0.5f;
+        if (parse_float_field(entry, "freeFreq", &pm->free_freq_mhz) < 0)
+            pm->free_freq_mhz = pm->typical_freq_mhz * 0.25f;
 
         log_debug("powerModel[%d]: eff=%d nr=%d typP=%.1fW typF=%.0fMHz sweet=%.0f plain=%.0f free=%.0f",
                    i, pm->efficiency, pm->nr_cores,
@@ -168,8 +129,6 @@ static int parse_power_model(struct json_object *mod_obj, Config *cfg) {
 static int parse_action_params(struct json_object *obj, ActionParams *ap) {
     memset(ap, 0, sizeof(*ap));
 
-    /* Helper lambda-style: iterate all top-level keys in the preset object */
-    struct json_object *key, *val;
     json_object_object_foreach(obj, k, v) {
         if (strncmp(k, "cpu.", 4) != 0)
             continue;
@@ -214,7 +173,6 @@ static int parse_sysfs_knobs(struct json_object *mod_obj, Config *cfg) {
         return 0;  /* Optional */
     }
 
-    struct json_object *key, *val;
     int idx = 0;
     json_object_object_foreach(knobs_obj, k, v) {
         if (idx >= MAX_KNOBS) {
@@ -265,11 +223,13 @@ static int parse_sched_rules(struct json_object *mod_obj, Config *cfg) {
 
         const char *name_str = NULL;
         parse_string_field(rule_obj, "name", &name_str);
-        strncpy(rule->name, name_str ? name_str : "unnamed", MAX_NAME_LEN - 1);
+        if (name_str)
+            strncpy(rule->name, name_str, MAX_NAME_LEN - 1);
 
         const char *regex_str = NULL;
         parse_string_field(rule_obj, "regex", &regex_str);
-        strncpy(rule->regex, regex_str ? regex_str : ".*", MAX_PATH_LEN - 1);
+        if (regex_str)
+            strncpy(rule->regex, regex_str, MAX_PATH_LEN - 1);
 
         rule->pinned = parse_bool_field(rule_obj, "pinned", false);
 
@@ -285,13 +245,14 @@ static int parse_sched_rules(struct json_object *mod_obj, Config *cfg) {
 
                 const char *pc_str = NULL;
                 parse_string_field(first, "pc", &pc_str);
-                /* pc maps to priority profile — simplified: map to fg priority */
-                if (strcmp(pc_str, "bg") == 0)   rule->prio_profile.fg = -3;
-                else if (strcmp(pc_str, "norm") == 0) rule->prio_profile.fg = -1;
-                else if (strcmp(pc_str, "coop") == 0) rule->prio_profile.fg = 124;
-                else if (strcmp(pc_str, "ui") == 0)   rule->prio_profile.fg = 120;
-                else if (strcmp(pc_str, "rtusr") == 0) rule->prio_profile.fg = 98;
-                else                                   rule->prio_profile.fg = 0;
+                if (pc_str) {
+                    if (strcmp(pc_str, "bg") == 0)   rule->prio_profile.fg = -3;
+                    else if (strcmp(pc_str, "norm") == 0) rule->prio_profile.fg = -1;
+                    else if (strcmp(pc_str, "coop") == 0) rule->prio_profile.fg = 124;
+                    else if (strcmp(pc_str, "ui") == 0)   rule->prio_profile.fg = 120;
+                    else if (strcmp(pc_str, "rtusr") == 0) rule->prio_profile.fg = 98;
+                    else                                   rule->prio_profile.fg = 0;
+                }
             }
         }
 
@@ -315,6 +276,18 @@ static PowerMode mode_from_string(const char *s) {
     return MODE_BALANCE;
 }
 
+static SceneState scene_from_string(const char *s) {
+    if (!s) return SCENE_IDLE;
+    if (strcmp(s, "idle") == 0)      return SCENE_IDLE;
+    if (strcmp(s, "touch") == 0)     return SCENE_TOUCH;
+    if (strcmp(s, "trigger") == 0)   return SCENE_TRIGGER;
+    if (strcmp(s, "gesture") == 0)   return SCENE_GESTURE;
+    if (strcmp(s, "junk") == 0)      return SCENE_JUNK;
+    if (strcmp(s, "switch") == 0)    return SCENE_SWITCH;
+    if (strcmp(s, "boost") == 0)     return SCENE_BOOST;
+    return SCENE_IDLE;
+}
+
 static int parse_presets(struct json_object *cfg_obj, Config *out) {
     struct json_object *presets_obj;
     if (!json_object_object_get_ex(cfg_obj, "presets", &presets_obj)) {
@@ -323,7 +296,6 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
     }
 
     /* Iterate each power mode preset */
-    struct json_object *pname, *pval;
     json_object_object_foreach(presets_obj, mode_name, mode_obj) {
         PowerMode mode = mode_from_string(mode_name);
         if (mode >= MODE_NUM) {
@@ -335,7 +307,6 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
         strncpy(preset->name, mode_name, MAX_NAME_LEN - 1);
 
         /* Each mode has state sub-objects: idle, touch, trigger, etc. */
-        struct json_object *sname, *sval;
         json_object_object_foreach(mode_obj, state_name, state_obj) {
             /* Parse global defaults (*) */
             if (strcmp(state_name, "*") == 0) {
@@ -343,32 +314,9 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
                 continue;
             }
 
-            /* Map state name to enum */
-            SceneState scene;
-            if (strcmp(state_name, "idle") == 0)      scene = SCENE_IDLE;
-            else if (strcmp(state_name, "touch") == 0) scene = SCENE_TOUCH;
-            else if (strcmp(state_name, "trigger") == 0) scene = SCENE_TRIGGER;
-            else if (strcmp(state_name, "gesture") == 0) scene = SCENE_GESTURE;
-            else if (strcmp(state_name, "junk") == 0)  scene = SCENE_JUNK;
-            else if (strcmp(state_name, "switch") == 0) scene = SCENE_SWITCH;
-            else if (strcmp(state_name, "boost") == 0) scene = SCENE_BOOST;
-            else continue;
-
-            /* Parse state-specific params — StatePresets has named fields, not an array */
-            ActionParams *target_ap = NULL;
-            switch (scene) {
-                case SCENE_IDLE:      target_ap = &preset->presets.idle;      break;
-                case SCENE_TOUCH:     target_ap = &preset->presets.touch;     break;
-                case SCENE_TRIGGER:   target_ap = &preset->presets.trigger;   break;
-                case SCENE_GESTURE:   target_ap = &preset->presets.gesture;   break;
-                case SCENE_JUNK:      target_ap = &preset->presets.junk;      break;
-                case SCENE_SWITCH:    target_ap = &preset->presets.switch_;   break;
-                case SCENE_BOOST:     target_ap = &preset->presets.boost;     break;
-                default:              break;
-            }
-            if (target_ap) {
-                parse_action_params(state_obj, target_ap);
-            }
+            /* Map state name to enum and get ActionParams pointer */
+            SceneState scene = scene_from_string(state_name);
+            parse_action_params(state_obj, get_state_action(&preset->presets, scene));
         }
     }
     return 0;
@@ -398,7 +346,6 @@ static int parse_initials(struct json_object *cfg_obj, Config *out) {
         out->initial_base_slack_time    = 0.01f;
         out->initial_predict_thd        = 0.3f;
 
-        struct json_object *key, *val;
         json_object_object_foreach(cpu_obj, k, v) {
             double d = json_object_get_double(v);
             if (strcmp(k, "latencyTime") == 0)       out->initial_latency_time = (float)d;
@@ -427,13 +374,19 @@ static int parse_meta(struct json_object *cfg_obj, Config *out) {
     if (!json_object_object_get_ex(cfg_obj, "meta", &meta_obj))
         return 0;  /* Optional */
 
-    const char *name = NULL;
-    if (json_object_object_get_ex(meta_obj, "name", &name))
-        strncpy(out->meta_name, name, MAX_NAME_LEN - 1);
+    struct json_object *name_jo = NULL;
+    if (json_object_object_get_ex(meta_obj, "name", &name_jo)) {
+        const char *name = json_object_get_string(name_jo);
+        if (name)
+            strncpy(out->meta_name, name, MAX_NAME_LEN - 1);
+    }
 
-    const char *author = NULL;
-    if (json_object_object_get_ex(meta_obj, "author", &author))
-        strncpy(out->meta_author, author, MAX_NAME_LEN - 1);
+    struct json_object *author_jo = NULL;
+    if (json_object_object_get_ex(meta_obj, "author", &author_jo)) {
+        const char *author = json_object_get_string(author_jo);
+        if (author)
+            strncpy(out->meta_author, author, MAX_NAME_LEN - 1);
+    }
 
     return 0;
 }
@@ -449,27 +402,22 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
 
     struct json_object *sw_obj;
     if (json_object_object_get_ex(mod_obj, "switcher", &sw_obj)) {
-        const char *s = NULL;
-        if (json_object_object_get_ex(sw_obj, "switchInode", &s))
-            strncpy(out->switcher.switch_inode, s, MAX_PATH_LEN - 1);
-        if (json_object_object_get_ex(sw_obj, "perapp", &s))
-            strncpy(out->switcher.perapp_file, s, MAX_PATH_LEN - 1);
+        struct json_object *jo;
+        const char *s;
+        if (json_object_object_get_ex(sw_obj, "switchInode", &jo)) {
+            s = json_object_get_string(jo);
+            if (s) strncpy(out->switcher.switch_inode, s, MAX_PATH_LEN - 1);
+        }
+        if (json_object_object_get_ex(sw_obj, "perapp", &jo)) {
+            s = json_object_get_string(jo);
+            if (s) strncpy(out->switcher.perapp_file, s, MAX_PATH_LEN - 1);
+        }
 
         /* hintDuration */
         struct json_object *hd;
         if (json_object_object_get_ex(sw_obj, "hintDuration", &hd)) {
-            const char *sn;
-            struct json_object *sv;
             json_object_object_foreach(hd, sn, sv) {
-                SceneState scene;
-                if (strcmp(sn, "idle") == 0)      scene = SCENE_IDLE;
-                else if (strcmp(sn, "touch") == 0) scene = SCENE_TOUCH;
-                else if (strcmp(sn, "trigger") == 0) scene = SCENE_TRIGGER;
-                else if (strcmp(sn, "gesture") == 0) scene = SCENE_GESTURE;
-                else if (strcmp(sn, "junk") == 0)  scene = SCENE_JUNK;
-                else if (strcmp(sn, "switch") == 0) scene = SCENE_SWITCH;
-                else if (strcmp(sn, "boost") == 0) scene = SCENE_BOOST;
-                else continue;
+                SceneState scene = scene_from_string(sn);
                 out->switcher.hint_duration[scene] = json_object_get_double(sv);
             }
         }
@@ -484,25 +432,18 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
         out->input.gesture_thd_y = 0.03f;
         out->input.gesture_delay_time = 2.0f;
         out->input.hold_enter_time = 1.0f;
-        out->input.screen_width = 0;   /* 0 = auto-detect from sysfs */
-        out->input.screen_height = 0;
 
-        /* Parse optional overrides */
-        const char *s;
-        if (json_object_object_get_ex(inp_obj, "swipeThd", &s))
-            out->input.swipe_thd = json_object_get_double(s);
-        if (json_object_object_get_ex(inp_obj, "gestureThdX", &s))
-            out->input.gesture_thd_x = json_object_get_double(s);
-        if (json_object_object_get_ex(inp_obj, "gestureThdY", &s))
-            out->input.gesture_thd_y = json_object_get_double(s);
-        if (json_object_object_get_ex(inp_obj, "gestureDelayTime", &s))
-            out->input.gesture_delay_time = json_object_get_double(s);
-        if (json_object_object_get_ex(inp_obj, "holdEnterTime", &s))
-            out->input.hold_enter_time = json_object_get_double(s);
-        if (json_object_object_get_ex(inp_obj, "screenWidth", &s))
-            out->input.screen_width = atoi(s);
-        if (json_object_object_get_ex(inp_obj, "screenHeight", &s))
-            out->input.screen_height = atoi(s);
+        struct json_object *jo;
+        if (json_object_object_get_ex(inp_obj, "swipeThd", &jo))
+            out->input.swipe_thd = json_object_get_double(jo);
+        if (json_object_object_get_ex(inp_obj, "gestureThdX", &jo))
+            out->input.gesture_thd_x = json_object_get_double(jo);
+        if (json_object_object_get_ex(inp_obj, "gestureThdY", &jo))
+            out->input.gesture_thd_y = json_object_get_double(jo);
+        if (json_object_object_get_ex(inp_obj, "gestureDelayTime", &jo))
+            out->input.gesture_delay_time = json_object_get_double(jo);
+        if (json_object_object_get_ex(inp_obj, "holdEnterTime", &jo))
+            out->input.hold_enter_time = json_object_get_double(jo);
     }
 
     return 0;
@@ -530,17 +471,10 @@ int config_load(Config *cfg, const char *path) {
     strncpy(cfg->meta_name, "unknown", MAX_NAME_LEN - 1);
     strncpy(cfg->meta_author, "unknown", MAX_NAME_LEN - 1);
 
-    /* Parse JSON */
-    char *err_msg = NULL;
-    struct json_object *root =
-#ifdef USE_SYSTEM_JSON_PARSE_FILE
-        json_parse_file(path, &err_msg);
-#else
-        json_parse_file_fallback(path, &err_msg);
-#endif
+    /* Parse JSON using json_object_from_file (replaces deprecated json_parse_file) */
+    struct json_object *root = json_object_from_file(path);
     if (!root) {
-        log_error("Failed to parse JSON config '%s': %s", path, err_msg ?: "(unknown)");
-        free(err_msg);
+        log_error("Failed to parse JSON config '%s': file not found or invalid JSON", path);
         return -1;
     }
 
@@ -575,7 +509,6 @@ int config_validate(const Config *cfg) {
         return -1;
     }
 
-    /* Verify all clusters have positive frequencies */
     for (int i = 0; i < cfg->cpu.nr_clusters; i++) {
         const PowerModelEntry *pm = &cfg->cpu.power_model[i];
         if (pm->typical_freq_mhz <= 0) {
@@ -588,7 +521,6 @@ int config_validate(const Config *cfg) {
         }
     }
 
-    /* Verify at least one power mode preset exists */
     bool has_preset = false;
     for (int m = 0; m < MODE_NUM; m++) {
         if (cfg->presets[m].name[0] != '\0') {
@@ -614,13 +546,11 @@ int config_check_paths(const Config *cfg) {
     int missing = 0;
     int total = 0;
 
-    /* Check sysfs knobs */
     for (int i = 0; i < cfg->sysfs.nr_knobs; i++) {
         const KnobDef *knob = &cfg->sysfs.knobs[i];
         if (!knob->enabled) continue;
         total++;
 
-        /* Try opening for write to check accessibility */
         int fd = open(knob->path, O_WRONLY);
         if (fd < 0) {
             if (errno == ENOENT) {
@@ -629,7 +559,6 @@ int config_check_paths(const Config *cfg) {
             } else {
                 log_error("Cannot write to config path: %s (%s): %s",
                           knob->path, knob->name, strerror(errno));
-                /* EACCES is fatal — we can't function without sysfs access */
                 return -1;
             }
         } else {
@@ -637,12 +566,13 @@ int config_check_paths(const Config *cfg) {
         }
     }
 
-    /* Check switch inode directory */
     const char *dir = strrchr(cfg->switcher.switch_inode, '/');
     if (dir) {
         char dirpath[MAX_PATH_LEN];
-        strncpy(dirpath, cfg->switcher.switch_inode, dir - cfg->switcher.switch_inode + 1);
-        dirpath[dir - cfg->switcher.switch_inode + 1] = '\0';
+        size_t dirlen = (size_t)(dir - cfg->switcher.switch_inode);
+        if (dirlen >= MAX_PATH_LEN) dirlen = MAX_PATH_LEN - 1;
+        strncpy(dirpath, cfg->switcher.switch_inode, dirlen);
+        dirpath[dirlen] = '\0';
         struct stat st;
         if (stat(dirpath, &st) != 0 || !S_ISDIR(st.st_mode)) {
             log_warn("Switch inode directory does not exist: %s (will be created at runtime)", dirpath);
@@ -661,6 +591,4 @@ int config_check_paths(const Config *cfg) {
 
 void config_free(Config *cfg) {
     (void)cfg;
-    /* Currently no dynamically allocated resources in Config,
-     * but this is here for future-proofing. */
 }
