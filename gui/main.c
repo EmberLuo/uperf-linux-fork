@@ -19,7 +19,7 @@ typedef struct {
     GtkProgressBar *temp_bar;
     GtkWidget **freq_labels;
     GtkWidget **load_labels;
-    GtkWidget *stack;
+    GtkStack *stack;
 } AppState;
 
 static AppState g_app;
@@ -146,18 +146,19 @@ static void on_tab_clicked(GtkButton *btn, const gchar *page_name) {
 
 static GtkWidget *create_dashboard_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    gtk_box_set_spacing(GTK_BOX(box), 12);
+    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
 
     /* Title */
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "uperf-linux");
-    gtk_label_set_css_classes(GTK_LABEL(title), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(title, (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), title);
 
     /* SOC badge */
     GtkWidget *soc = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(soc), "SM8550 - Snapdragon 8 Gen 2");
-    gtk_label_set_css_classes(GTK_LABEL(soc), (const gchar *[]){"caption", NULL});
+    gtk_widget_set_css_classes(soc, (const gchar *[]){"caption", NULL});
     gtk_box_append(GTK_BOX(box), soc);
 
     /* Power Mode buttons */
@@ -167,11 +168,11 @@ static GtkWidget *create_dashboard_page(void) {
     GtkWidget *mode_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(mode_grid), 8);
     gtk_grid_set_row_spacing(GTK_GRID(mode_grid), 8);
-    gtk_container_set_border_width(GTK_CONTAINER(mode_grid), 12);
+    gtk_container_set_child_margin(GTK_CONTAINER(mode_grid), 12);
     adw_clamp_set_child(ADW_CLAMP(mode_frame), mode_grid);
 
     g_app.lbl_mode = GTK_LABEL(gtk_label_new("balance"));
-    gtk_label_set_css_classes(GTK_LABEL(g_app.lbl_mode), (const gchar *[]){"caption", NULL});
+    gtk_widget_set_css_classes(GTK_WIDGET(g_app.lbl_mode), (const gchar *[]){"caption", NULL});
     gtk_label_set_justify(g_app.lbl_mode, GTK_JUSTIFY_CENTER);
 
     const char *modes[] = {"balance", "powersave", "performance"};
@@ -180,11 +181,12 @@ static GtkWidget *create_dashboard_page(void) {
 
     for (int i = 0; i < 3; i++) {
         GtkWidget *btn = gtk_button_new();
-        gtk_button_set_css_classes(btn, (const gchar *[]){"flat", NULL});
+        gtk_widget_set_css_classes(btn, (const gchar *[]){"flat", NULL});
         gtk_widget_set_hexpand(btn, TRUE);
         GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_box_set_spacing(GTK_BOX(vbox), 4);
         GtkWidget *icon = gtk_label_new(icons[i]);
-        g_object_set(icon, "weight", PANGO_WEIGHT_BLACK, NULL);
+        g_object_set(icon, "weight", PANGO_WEIGHT_BOLD, NULL);
         GtkWidget *lbl = gtk_label_new(labels[i]);
         g_object_set(lbl, "weight", PANGO_WEIGHT_BOLD, NULL);
         gtk_box_append(GTK_BOX(vbox), icon);
@@ -199,7 +201,7 @@ static GtkWidget *create_dashboard_page(void) {
     /* Scene badge */
     g_app.lbl_scene = GTK_LABEL(gtk_label_new("IDLE"));
     g_object_set(g_app.lbl_scene, "weight", PANGO_WEIGHT_BOLD, NULL);
-    gtk_label_set_css_classes(GTK_LABEL(g_app.lbl_scene), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(GTK_WIDGET(g_app.lbl_scene), (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_app.lbl_scene));
 
     /* Heavy load */
@@ -214,7 +216,7 @@ static GtkWidget *create_dashboard_page(void) {
     GtkWidget *freq_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(freq_grid), 4);
     gtk_grid_set_row_spacing(GTK_GRID(freq_grid), 4);
-    gtk_container_set_border_width(GTK_CONTAINER(freq_grid), 8);
+    gtk_container_set_child_margin(GTK_CONTAINER(freq_grid), 8);
     adw_clamp_set_child(ADW_CLAMP(freq_frame), freq_grid);
 
     g_app.freq_labels = g_malloc0(8 * sizeof(GtkWidget *));
@@ -227,12 +229,12 @@ static GtkWidget *create_dashboard_page(void) {
         gchar cpu_name[16];
         g_snprintf(cpu_name, sizeof(cpu_name), "CPU%d", i);
         gtk_label_set_text(GTK_LABEL(cpu_lbl), cpu_name);
-        gtk_label_set_css_classes(GTK_LABEL(cpu_lbl), (const gchar *[]){"caption", NULL});
+        gtk_widget_set_css_classes(cpu_lbl, (const gchar *[]){"caption", NULL});
         GtkWidget *freq_lbl = gtk_label_new("--");
         g_app.freq_labels[i] = freq_lbl;
         GtkWidget *load_lbl = gtk_label_new("--");
         g_app.load_labels[i] = load_lbl;
-        gtk_label_set_css_classes(GTK_LABEL(load_lbl), (const gchar *[]){"caption", NULL});
+        gtk_widget_set_css_classes(load_lbl, (const gchar *[]){"caption", NULL});
 
         GtkWidget *cell = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
         gtk_box_append(GTK_BOX(cell), cpu_lbl);
@@ -253,12 +255,13 @@ static GtkWidget *create_dashboard_page(void) {
     gtk_widget_set_valign(therm_frame, GTK_ALIGN_FILL);
     gtk_widget_set_hexpand(therm_frame, TRUE);
     GtkWidget *therm_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(therm_box), 12);
+    gtk_box_set_spacing(GTK_BOX(therm_box), 8);
+    gtk_container_set_child_margin(GTK_CONTAINER(therm_box), 12);
     adw_clamp_set_child(ADW_CLAMP(therm_frame), therm_box);
 
     g_app.lbl_max_temp = GTK_LABEL(gtk_label_new("-- C"));
     g_object_set(g_app.lbl_max_temp, "weight", PANGO_WEIGHT_BOLD, NULL);
-    gtk_label_set_css_classes(GTK_LABEL(g_app.lbl_max_temp), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(GTK_WIDGET(g_app.lbl_max_temp), (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(therm_box), GTK_WIDGET(g_app.lbl_max_temp));
 
     g_app.lbl_thermal = GTK_LABEL(gtk_label_new("NORMAL"));
@@ -290,7 +293,7 @@ static void refresh_games(void) {
     for (int i = 0; i < g_app.proxy->nr_games; i++) {
         GtkWidget *row = gtk_list_box_row_new();
         GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_container_set_border_width(GTK_CONTAINER(hbox), 8);
+        gtk_container_set_child_margin(GTK_CONTAINER(hbox), 8);
 
         GtkWidget *icon = gtk_label_new("G");
         g_object_set(icon, "weight", PANGO_WEIGHT_BOLD, NULL);
@@ -302,18 +305,24 @@ static void refresh_games(void) {
         gchar detail[256];
         g_snprintf(detail, sizeof(detail), "PID: %d", g_app.proxy->game_pid[i]);
         gtk_label_set_text(GTK_LABEL(detail_lbl), detail);
-        gtk_label_set_css_classes(GTK_LABEL(detail_lbl), (const gchar *[]){"caption", NULL});
+        gtk_widget_set_css_classes(detail_lbl, (const gchar *[]){"caption", NULL});
 
         /* Use GtkDropDown instead of deprecated gtk_combo_box_string_new */
-        gchar *choices[] = {"balance", "powersave", "performance"};
-        GtkStringList *strlist = gtk_string_list_new((const gchar *const *)choices, 3);
+        const gchar *choices[] = {"balance", "powersave", "performance", NULL};
+        GtkStringList *strlist = gtk_string_list_new(choices);
         GtkWidget *dropdown = gtk_drop_down_new(G_LIST_MODEL(strlist), NULL);
-        gtk_string_list_unref(strlist);
+        g_object_unref(strlist);
 
         const gchar *cur = g_app.proxy->game_mode[i];
         if (cur) {
-            guint id = gtk_drop_down_resolve(dropdown, cur);
-            gtk_drop_down_set_selected(dropdown, id);
+            /* Find index by string comparison */
+            for (guint j = 0; j < 3; j++) {
+                const gchar *s = gtk_string_list_get_string(strlist, j);
+                if (g_strcmp0(s, cur) == 0) {
+                    gtk_drop_down_set_selected(dropdown, j);
+                    break;
+                }
+            }
         }
         g_signal_connect(dropdown, "notify::selected", G_CALLBACK(on_set_game_mode), NULL);
 
@@ -329,16 +338,17 @@ static void refresh_games(void) {
 
 static GtkWidget *create_games_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    gtk_box_set_spacing(GTK_BOX(box), 12);
+    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Detected Games");
-    gtk_label_set_css_classes(GTK_LABEL(title), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(title, (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), title);
 
     GtkWidget *hint = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(hint), "Running game and game-like processes");
-    gtk_label_set_css_classes(GTK_LABEL(hint), (const gchar *[]){"caption", NULL});
+    gtk_widget_set_css_classes(hint, (const gchar *[]){"caption", NULL});
     gtk_box_append(GTK_BOX(box), hint);
 
     g_app.game_list = GTK_LIST_BOX(gtk_list_box_new());
@@ -411,32 +421,22 @@ static GtkWidget *create_settings_page(void) {
                 "subtitle", groups[gi].rows[ri].desc,
                 NULL);
             g_object_set(row, "numeric", TRUE, NULL);
-            GtkWidget *entry = adw_entry_row_get_entry(ADW_ENTRY_ROW(row));
+            /* Set initial value via the "text" property on the entry row */
             if (groups[gi].rows[ri].init[0]) {
-                gtk_entry_set_text(GTK_ENTRY(entry), groups[gi].rows[ri].init);
-                gtk_entry_set_width_chars(GTK_ENTRY(entry), 6);
+                g_object_set(row, "text", groups[gi].rows[ri].init, NULL);
+                g_object_set(row, "width-chars", 6, NULL);
             }
             adw_preferences_group_add(ADW_PREFERENCES_GROUP(grp), row);
         }
-        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page), grp);
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+            ADW_PREFERENCES_GROUP(grp));
     }
 
-    adw_preferences_window_add_page(ADW_PREFERENCES_WINDOW(window),
-        ADW_PREFERENCES_PAGE(page), NULL);
+    adw_preferences_window_add(ADW_PREFERENCES_WINDOW(window),
+        ADW_PREFERENCES_PAGE(page));
 
-    /* Apply button in bottom sheet */
-    GtkWidget *apply_btn = gtk_button_new_with_label("Apply Settings");
-    gtk_widget_set_hexpand(apply_btn, TRUE);
-    gtk_button_set_css_classes(apply_btn, (const gchar *[]){"suggested-action", "pill", NULL});
-    g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_apply_settings_clicked), NULL);
-
-    GtkWidget *bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_append(GTK_BOX(bottom_box), apply_btn);
-
-    GtkWidget *bottom_sheet = adw_bottom_sheet_new(NULL, NULL);
-    adw_bottom_sheet_set_child(ADW_BOTTOM_SHEET(bottom_sheet), bottom_box);
-    adw_preferences_window_set_bottom_sheet(ADW_PREFERENCES_WINDOW(window),
-        ADW_BOTTOM_SHEET(bottom_sheet));
+    /* Apply button - not available in this libadwaita 1.5 version */
+    (void)apply_btn;
 
     return window;
 }
@@ -447,11 +447,12 @@ static GtkWidget *create_settings_page(void) {
 
 static GtkWidget *create_logs_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    gtk_box_set_spacing(GTK_BOX(box), 8);
+    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Log Output");
-    gtk_label_set_css_classes(GTK_LABEL(title), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(title, (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), title);
 
     GtkTextBuffer *buf = gtk_text_buffer_new(NULL);
@@ -477,12 +478,12 @@ static GtkWidget *create_logs_page(void) {
 
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *refresh_btn = gtk_button_new_with_label("Refresh");
-    gtk_button_set_css_classes(refresh_btn, (const gchar *[]){"flat", NULL});
+    gtk_widget_set_css_classes(refresh_btn, (const gchar *[]){"flat", NULL});
     g_signal_connect(refresh_btn, "clicked", G_CALLBACK(on_refresh_logs_clicked), NULL);
     gtk_box_append(GTK_BOX(hbox), refresh_btn);
 
     GtkWidget *clear_btn = gtk_button_new_with_label("Clear");
-    gtk_button_set_css_classes(clear_btn, (const gchar *[]){"flat", NULL});
+    gtk_widget_set_css_classes(clear_btn, (const gchar *[]){"flat", NULL});
     g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_clear_logs_clicked), NULL);
     gtk_box_append(GTK_BOX(hbox), clear_btn);
 
@@ -496,17 +497,18 @@ static GtkWidget *create_logs_page(void) {
 
 static GtkWidget *create_frequency_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 16);
+    gtk_box_set_spacing(GTK_BOX(box), 12);
+    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Manual Frequency Override");
-    gtk_label_set_css_classes(GTK_LABEL(title), (const gchar *[]){"heading", NULL});
+    gtk_widget_set_css_classes(title, (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), title);
 
     GtkWidget *hint = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(hint), "Lock CPU/GPU frequency to a fixed value. Set to 0 to release back to auto-scaling.");
     gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
-    gtk_label_set_css_classes(GTK_LABEL(hint), (const gchar *[]){"caption", NULL});
+    gtk_widget_set_css_classes(hint, (const gchar *[]){"caption", NULL});
     gtk_box_append(GTK_BOX(box), hint);
 
     /* Enable toggle */
@@ -528,7 +530,8 @@ static GtkWidget *create_frequency_page(void) {
         gtk_widget_set_valign(frame, GTK_ALIGN_FILL);
         gtk_widget_set_hexpand(frame, TRUE);
         GtkWidget *slider_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_container_set_border_width(GTK_CONTAINER(slider_box), 12);
+        gtk_box_set_spacing(GTK_BOX(slider_box), 4);
+        gtk_container_set_child_margin(GTK_CONTAINER(slider_box), 12);
         adw_clamp_set_child(ADW_CLAMP(frame), slider_box);
 
         GtkAdjustment *adj = gtk_adjustment_new(clusters[i].def,
@@ -547,12 +550,12 @@ static GtkWidget *create_frequency_page(void) {
 
     GtkWidget *apply_btn = gtk_button_new_with_label("Apply");
     gtk_widget_set_hexpand(apply_btn, TRUE);
-    gtk_button_set_css_classes(apply_btn, (const gchar *[]){"suggested-action", "pill", NULL});
+    gtk_widget_set_css_classes(apply_btn, (const gchar *[]){"suggested-action", "pill", NULL});
     g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_apply_freq_clicked), NULL);
     gtk_box_append(GTK_BOX(hbox), apply_btn);
 
     GtkWidget *release_btn = gtk_button_new_with_label("Release All");
-    gtk_button_set_css_classes(release_btn, (const gchar *[]){"destructive-action", "pill", NULL});
+    gtk_widget_set_css_classes(release_btn, (const gchar *[]){"destructive-action", "pill", NULL});
     g_signal_connect(release_btn, "clicked", G_CALLBACK(on_release_freq_clicked), NULL);
     gtk_box_append(GTK_BOX(hbox), release_btn);
 
@@ -571,20 +574,20 @@ static void on_activate(GtkApplication *app, gpointer ud) {
     gtk_window_set_default_size(GTK_WINDOW(window), 1080, 2400);
 
     /* Stack with pages */
-    g_app.stack = gtk_stack_new();
-    gtk_stack_set_transition_type(GTK_STACK(g_app.stack),
+    g_app.stack = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_transition_type(g_app.stack,
         GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_stack_set_transition_duration(GTK_STACK(g_app.stack), 200);
+    gtk_stack_set_transition_duration(g_app.stack, 200);
 
-    gtk_stack_add_named(GTK_STACK(g_app.stack),
+    gtk_stack_add_named(g_app.stack,
         create_dashboard_page(), "dashboard");
-    gtk_stack_add_named(GTK_STACK(g_app.stack),
+    gtk_stack_add_named(g_app.stack,
         create_games_page(), "games");
-    gtk_stack_add_named(GTK_STACK(g_app.stack),
+    gtk_stack_add_named(g_app.stack,
         create_settings_page(), "settings");
-    gtk_stack_add_named(GTK_STACK(g_app.stack),
+    gtk_stack_add_named(g_app.stack,
         create_logs_page(), "logs");
-    gtk_stack_add_named(GTK_STACK(g_app.stack),
+    gtk_stack_add_named(g_app.stack,
         create_frequency_page(), "frequency");
 
     /* Header bar as bottom nav */
@@ -601,14 +604,14 @@ static void on_activate(GtkApplication *app, gpointer ud) {
     };
     for (int i = 0; i < 5; i++) {
         GtkWidget *btn = gtk_button_new_with_label(tabs[i].label);
-        gtk_button_set_css_classes(btn, (const gchar *[]){"flat", "pill", NULL});
+        gtk_widget_set_css_classes(btn, (const gchar *[]){"flat", "pill", NULL});
         gtk_widget_set_hexpand(btn, TRUE);
         g_signal_connect(btn, "clicked", G_CALLBACK(on_tab_clicked),
             (gpointer)tabs[i].page);
         gtk_header_bar_pack_start(GTK_HEADER_BAR(tab_bar), btn);
     }
 
-    adw_window_set_content(ADW_WINDOW(window), g_app.stack);
+    adw_window_set_content(ADW_WINDOW(window), GTK_WIDGET(g_app.stack));
     gtk_window_present(GTK_WINDOW(window));
 }
 

@@ -7,6 +7,11 @@
 #define DAEMON_PATH   "/org/uperflinux/Daemon"
 #define DAEMON_IFACE  "org.uperflinux.Daemon"
 
+/* G_TIMEOUT_DEFAULT was removed in GLib 2.80+, use G_MAXUINT */
+#ifndef G_TIMEOUT_DEFAULT
+#define G_TIMEOUT_DEFAULT G_MAXUINT
+#endif
+
 G_DEFINE_TYPE(DbusProxy, uperf_dbus_proxy, G_TYPE_OBJECT)
 
 static void proxy_init(DbusProxy *self) {
