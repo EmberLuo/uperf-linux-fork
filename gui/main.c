@@ -147,7 +147,10 @@ static void on_tab_clicked(GtkButton *btn, const gchar *page_name) {
 static GtkWidget *create_dashboard_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_box_set_spacing(GTK_BOX(box), 12);
-    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
+    gtk_box_set_margin_top(GTK_BOX(box), 16);
+    gtk_box_set_margin_bottom(GTK_BOX(box), 16);
+    gtk_box_set_margin_start(GTK_BOX(box), 16);
+    gtk_box_set_margin_end(GTK_BOX(box), 16);
 
     /* Title */
     GtkWidget *title = gtk_label_new(NULL);
@@ -168,7 +171,10 @@ static GtkWidget *create_dashboard_page(void) {
     GtkWidget *mode_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(mode_grid), 8);
     gtk_grid_set_row_spacing(GTK_GRID(mode_grid), 8);
-    gtk_container_set_child_margin(GTK_CONTAINER(mode_grid), 12);
+    gtk_grid_set_margin_top(GTK_GRID(mode_grid), 12);
+    gtk_grid_set_margin_bottom(GTK_GRID(mode_grid), 12);
+    gtk_grid_set_margin_start(GTK_GRID(mode_grid), 12);
+    gtk_grid_set_margin_end(GTK_GRID(mode_grid), 12);
     adw_clamp_set_child(ADW_CLAMP(mode_frame), mode_grid);
 
     g_app.lbl_mode = GTK_LABEL(gtk_label_new("balance"));
@@ -216,7 +222,10 @@ static GtkWidget *create_dashboard_page(void) {
     GtkWidget *freq_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(freq_grid), 4);
     gtk_grid_set_row_spacing(GTK_GRID(freq_grid), 4);
-    gtk_container_set_child_margin(GTK_CONTAINER(freq_grid), 8);
+    gtk_grid_set_margin_top(GTK_GRID(freq_grid), 8);
+    gtk_grid_set_margin_bottom(GTK_GRID(freq_grid), 8);
+    gtk_grid_set_margin_start(GTK_GRID(freq_grid), 8);
+    gtk_grid_set_margin_end(GTK_GRID(freq_grid), 8);
     adw_clamp_set_child(ADW_CLAMP(freq_frame), freq_grid);
 
     g_app.freq_labels = g_malloc0(8 * sizeof(GtkWidget *));
@@ -256,7 +265,10 @@ static GtkWidget *create_dashboard_page(void) {
     gtk_widget_set_hexpand(therm_frame, TRUE);
     GtkWidget *therm_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_set_spacing(GTK_BOX(therm_box), 8);
-    gtk_container_set_child_margin(GTK_CONTAINER(therm_box), 12);
+    gtk_box_set_margin_top(GTK_BOX(therm_box), 12);
+    gtk_box_set_margin_bottom(GTK_BOX(therm_box), 12);
+    gtk_box_set_margin_start(GTK_BOX(therm_box), 12);
+    gtk_box_set_margin_end(GTK_BOX(therm_box), 12);
     adw_clamp_set_child(ADW_CLAMP(therm_frame), therm_box);
 
     g_app.lbl_max_temp = GTK_LABEL(gtk_label_new("-- C"));
@@ -293,7 +305,10 @@ static void refresh_games(void) {
     for (int i = 0; i < g_app.proxy->nr_games; i++) {
         GtkWidget *row = gtk_list_box_row_new();
         GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_container_set_child_margin(GTK_CONTAINER(hbox), 8);
+        gtk_box_set_margin_top(GTK_BOX(hbox), 8);
+    gtk_box_set_margin_bottom(GTK_BOX(hbox), 8);
+    gtk_box_set_margin_start(GTK_BOX(hbox), 8);
+    gtk_box_set_margin_end(GTK_BOX(hbox), 8);
 
         GtkWidget *icon = gtk_label_new("G");
         g_object_set(icon, "weight", PANGO_WEIGHT_BOLD, NULL);
@@ -319,7 +334,7 @@ static void refresh_games(void) {
             for (guint j = 0; j < 3; j++) {
                 const gchar *s = gtk_string_list_get_string(strlist, j);
                 if (g_strcmp0(s, cur) == 0) {
-                    gtk_drop_down_set_selected(dropdown, j);
+                    gtk_drop_down_set_selected(GTK_DROP_DOWN(dropdown), j);
                     break;
                 }
             }
@@ -339,7 +354,10 @@ static void refresh_games(void) {
 static GtkWidget *create_games_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_box_set_spacing(GTK_BOX(box), 12);
-    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
+    gtk_box_set_margin_top(GTK_BOX(box), 16);
+    gtk_box_set_margin_bottom(GTK_BOX(box), 16);
+    gtk_box_set_margin_start(GTK_BOX(box), 16);
+    gtk_box_set_margin_end(GTK_BOX(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Detected Games");
@@ -435,8 +453,7 @@ static GtkWidget *create_settings_page(void) {
     adw_preferences_window_add(ADW_PREFERENCES_WINDOW(window),
         ADW_PREFERENCES_PAGE(page));
 
-    /* Apply button - not available in this libadwaita 1.5 version */
-    (void)apply_btn;
+    /* Apply button removed - not available in this libadwaita 1.5 version */
 
     return window;
 }
@@ -448,7 +465,10 @@ static GtkWidget *create_settings_page(void) {
 static GtkWidget *create_logs_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_set_spacing(GTK_BOX(box), 8);
-    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
+    gtk_box_set_margin_top(GTK_BOX(box), 16);
+    gtk_box_set_margin_bottom(GTK_BOX(box), 16);
+    gtk_box_set_margin_start(GTK_BOX(box), 16);
+    gtk_box_set_margin_end(GTK_BOX(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Log Output");
@@ -498,7 +518,10 @@ static GtkWidget *create_logs_page(void) {
 static GtkWidget *create_frequency_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_box_set_spacing(GTK_BOX(box), 12);
-    gtk_container_set_child_margin(GTK_CONTAINER(box), 16);
+    gtk_box_set_margin_top(GTK_BOX(box), 16);
+    gtk_box_set_margin_bottom(GTK_BOX(box), 16);
+    gtk_box_set_margin_start(GTK_BOX(box), 16);
+    gtk_box_set_margin_end(GTK_BOX(box), 16);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_text(GTK_LABEL(title), "Manual Frequency Override");
@@ -531,7 +554,10 @@ static GtkWidget *create_frequency_page(void) {
         gtk_widget_set_hexpand(frame, TRUE);
         GtkWidget *slider_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_box_set_spacing(GTK_BOX(slider_box), 4);
-        gtk_container_set_child_margin(GTK_CONTAINER(slider_box), 12);
+        gtk_box_set_margin_top(GTK_BOX(slider_box), 12);
+    gtk_box_set_margin_bottom(GTK_BOX(slider_box), 12);
+    gtk_box_set_margin_start(GTK_BOX(slider_box), 12);
+    gtk_box_set_margin_end(GTK_BOX(slider_box), 12);
         adw_clamp_set_child(ADW_CLAMP(frame), slider_box);
 
         GtkAdjustment *adj = gtk_adjustment_new(clusters[i].def,
