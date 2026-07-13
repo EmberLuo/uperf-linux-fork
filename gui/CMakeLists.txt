@@ -1,46 +1,30 @@
-# Qt6 GUI CMakeLists.txt for uperf-linux
-cmake_minimum_required(VERSION 3.20)
-project(uperf-gui LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.22)
+project(uperf-gui LANGUAGES C)
+set(CMAKE_C_STANDARD 17)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GTK4 REQUIRED gtk4>=4.6)
+pkg_check_modules(LIBADWAITA REQUIRED libadwaita-1>=1.2)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Charts)
-qt_standard_project_setup()
-
-set(QML_DIR "${CMAKE_CURRENT_SOURCE_DIR}/qml")
-
-# Executable (no qrc needed since resources dir is empty)
 add_executable(uperf-gui
-    main.cpp
-)
-
-target_link_libraries(uperf-gui PRIVATE
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Qml
-    Qt6::Quick
-    Qt6::DBus
-    Qt6::Charts
+    main.c
+    src/dbus_proxy.c
+    include/dbus_proxy.h
 )
 
 target_include_directories(uperf-gui PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${GTK4_INCLUDE_DIRS}
+    ${LIBADWAITA_INCLUDE_DIRS}
+    include
 )
 
-# Install QML files alongside the binary
-install(TARGETS uperf-gui RUNTIME DESTINATION /usr/local/bin)
-
-# Install QML directory
-install(DIRECTORY ${QML_DIR}/
-    DESTINATION share/uperf-gui/qml
-    FILES_MATCHING PATTERN "*.qml"
+target_link_libraries(uperf-gui PRIVATE
+    ${GTK4_LIBRARIES}
+    ${LIBADWAITA_LIBRARIES}
 )
 
-# Desktop entry
-install(FILES uperf-gui.desktop
-    DESTINATION share/applications
-)
+pkg_check_modules(GLIB2 REQUIRED glib-2.0)
+target_link_libraries(uperf-gui PRIVATE ${GLIB2_LIBRARIES})
+
+install(TARGETS uperf-gui DESTINATION /usr/local/bin)
+install(FILES uperf-gui.desktop DESTINATION share/applications)

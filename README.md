@@ -6,7 +6,7 @@
 
 ## Overview
 
-`uperf-linux` is a systemd-managed daemon with a Qt6/QML GUI that provides fine-grained CPU/GPU scheduling
+`uperf-linux` is a systemd-managed daemon with a GTK4/libadwaita GUI that provides fine-grained CPU/GPU scheduling
 for gaming on Linux ARM64 devices. It uses a JSON-driven configuration approach with scene-based state machines,
 touch-aware pacing, and power model optimization.
 
@@ -40,9 +40,9 @@ touch-aware pacing, and power model optimization.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## GUI (Qt6/QML)
+## GUI (GTK4/libadwaita)
 
-A tablet-friendly Qt6/QML graphical controller communicates with the daemon over **DBus**:
+A tablet-friendly GTK4/libadwaita graphical controller communicates with the daemon over **DBus**:
 
 ```bash
 # Launch the GUI
@@ -50,10 +50,11 @@ uperf-gui
 ```
 
 ### Features
-- **Dashboard**: Power mode buttons, real-time CPU frequency chart, load meters, scene indicator
+- **Dashboard**: Power mode buttons, real-time CPU frequency display, load meters, scene indicator
 - **Games**: Detected game process list with per-app mode assignment
-- **Settings**: Threshold sliders (HeavyLoad, sample time, margin, burst)
+- **Settings**: Threshold inputs (HeavyLoad, sample time, margin, burst, power budgets, thermal)
 - **Logs**: Live daemon log viewer
+- **Frequency Override**: Manual CPU/GPU frequency locking
 
 ### DBus Interface
 The daemon exposes `org.uperflinux.Daemon` on the system bus:
@@ -81,13 +82,15 @@ dbus-send --system --dest=org.uperflinux.Daemon --print-reply \
 
 ```bash
 # Debian/Ubuntu
-sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev
+sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev \
+    libgtk-4-dev libadwaita-1-dev
 
 # Arch Linux
-sudo pacman -S cmake json-c systemd-libs glib2
+sudo pacman -S cmake json-c systemd-libs glib2 gtk4 libadwaita
 
 # Fedora
-sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel
+sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel \
+    gtk4-devel libadwaita-devel
 ```
 
 ### Build
@@ -112,7 +115,7 @@ sudo cp ../systemd/uperf-linux.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now uperf-linux.service
 
-# GUI (requires Qt6)
+# GUI
 sudo cp uperf-gui /usr/local/bin/
 sudo desktop-file-install gui/uperf-gui.desktop
 ```
@@ -212,7 +215,7 @@ the Free Software Foundation, either version 3 of the License, or
 - [x] CLI tool (uperfctl)
 - [x] systemd service unit
 - [x] DBus interface (org.uperflinux.Daemon)
-- [x] Qt6/QML GUI (Dashboard, Games, Settings, Logs)
+- [x] GTK4/libadwaita GUI (Dashboard, Games, Settings, Logs, Frequency Override)
 - [x] deb packaging (dpkg-deb)
 - [x] Unit tests (75 tests across 5 test files)
 - [x] Thermal awareness (read /sys/class/thermal/, frequency capping, DBus exposure)

@@ -3,14 +3,13 @@ Version: 0.1.0
 Section: x11
 Priority: optional
 Architecture: arm64
-Depends: libqt6core6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6qml6 (>= 6.2),
-         libqt6quick6 (>= 6.2), libqt6charts6 (>= 6.2), libqt6dbus6 (>= 6.2),
+Depends: libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.2),
          libglib2.0-0 (>= 2.0), uperf-linux (>= 0.1.0)
 Recommends: systemd, jq
 Maintainer: code002-2 <hiez832670@gmail.com>
 Description: Graphical controller for uperf-linux performance scheduler
  uperf-linux is a userspace CPU/GPU scheduler for Linux ARM64 gaming
- devices. This package includes the Qt6/QML graphical interface that
+ devices. This package includes the GTK4/libadwaita graphical interface that
  allows you to:
   - Switch between Balance, Powersave, and Performance modes
   - Monitor real-time CPU frequencies and loads

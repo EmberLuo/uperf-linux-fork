@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS_RELEASE "-O2 -Wall -Wextra -Werror")
 set(CMAKE_C_FLAGS_DEBUG   "-O0 -g -Wall -Wextra")
 
-option(BUILD_GUI "Build Qt6 GUI" ON)
+option(BUILD_GUI "Build GTK4 GUI" ON)
 option(BUILD_TESTS "Build tests" ON)
 
 # Find dependencies
@@ -151,11 +151,11 @@ if(BUILD_TESTS)
     target_link_libraries(test_thermal PRIVATE pthread)
 endif()
 
-# ---- Qt6 GUI ----
+# ---- GTK4/libadwaita GUI ----
 if(BUILD_GUI)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick DBus Charts)
-    qt_standard_project_setup()
-
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK4 REQUIRED gtk4>=4.6)
+    pkg_check_modules(LIBADWAITA REQUIRED libadwaita-1>=1.2)
     add_subdirectory(gui)
 endif()
 

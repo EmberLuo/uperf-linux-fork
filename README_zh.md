@@ -4,7 +4,7 @@
 
 ## 概述
 
-`uperf-linux` 是一个由 systemd 管理的守护进程，附带 Qt6/QML 图形界面，为 Linux ARM64 游戏设备提供精细的 CPU/GPU 调度。采用 JSON 驱动的配置文件、场景化状态机、触摸感知调速和功耗模型优化。
+`uperf-linux` 是一个由 systemd 管理的守护进程，附带 GTK4/libadwaita 图形界面，为 Linux ARM64 游戏设备提供精细的 CPU/GPU 调度。采用 JSON 驱动的配置文件、场景化状态机、触摸感知调速和功耗模型优化。
 
 - **JSON 配置驱动** — 直接写入 sysfs 节点（cpufreq、devfreq、uClamp）
 - **场景化状态机** — idle → touch → trigger → gesture → junk → switch → boost
@@ -36,9 +36,9 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## GUI（Qt6/QML）
+## GUI（GTK4/libadwaita）
 
-平板友好的 Qt6/QML 图形控制器，通过 **DBus** 与守护进程双向通信：
+平板友好的 GTK4/libadwaita 图形控制器，通过 **DBus** 与守护进程双向通信：
 
 ```bash
 # 启动 GUI
@@ -46,10 +46,11 @@ uperf-gui
 ```
 
 ### 功能
-- **仪表盘** — 电源模式按钮、实时 CPU 频率曲线图、负载仪表、场景指示器
+- **仪表盘** — 电源模式按钮、实时 CPU 频率显示、负载仪表、场景指示器
 - **游戏列表** — 已检测到的游戏进程，支持按应用分配模式
-- **设置** — 阈值滑块（HeavyLoad 阈值、采样时间、余量、突发强度）
+- **设置** — 阈值输入（HeavyLoad 阈值、采样时间、余量、突发强度、功耗预算、热管理）
 - **日志** — 守护进程实时日志查看器
+- **频率覆盖** — 手动锁定 CPU/GPU 频率
 
 ### DBus 接口
 守护进程在 system bus 上暴露 `org.uperflinux.Daemon`：
@@ -77,13 +78,15 @@ dbus-send --system --dest=org.uperflinux.Daemon --print-reply \
 
 ```bash
 # Debian/Ubuntu
-sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev
+sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev \
+    libgtk-4-dev libadwaita-1-dev
 
 # Arch Linux
-sudo pacman -S cmake json-c systemd-libs glib2
+sudo pacman -S cmake json-c systemd-libs glib2 gtk4 libadwaita
 
 # Fedora
-sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel
+sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel \
+    gtk4-devel libadwaita-devel
 ```
 
 ### 编译
@@ -108,7 +111,7 @@ sudo cp ../systemd/uperf-linux.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now uperf-linux.service
 
-# GUI（需要 Qt6）
+# GUI
 sudo cp uperf-gui /usr/local/bin/
 sudo desktop-file-install gui/uperf-gui.desktop
 ```
@@ -207,7 +210,7 @@ journalctl -u uperf-linux -f
 - [x] CLI 工具（uperfctl）
 - [x] systemd 服务单元
 - [x] DBus 接口（org.uperflinux.Daemon）
-- [x] Qt6/QML GUI（仪表盘、游戏列表、设置、日志）
+- [x] GTK4/libadwaita GUI（仪表盘、游戏列表、设置、日志、频率覆盖）
 - [x] deb 打包（dpkg-deb）
 - [x] 单元测试（扩展覆盖率）
 - [x] 热管理（读取 /sys/class/thermal/，频率限制，DBus 暴露）
