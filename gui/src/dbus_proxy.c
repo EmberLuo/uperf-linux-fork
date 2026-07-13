@@ -1,8 +1,7 @@
 #define _GNU_SOURCE
-#include "dbus_proxy.h"
-
 #include <gio/gio.h>
 #include <glib.h>
+#include "dbus_proxy.h"
 
 #define DAEMON_BUS    "org.uperflinux.Daemon"
 #define DAEMON_PATH   "/org/uperflinux/Daemon"

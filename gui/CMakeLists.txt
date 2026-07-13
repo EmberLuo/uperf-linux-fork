@@ -19,12 +19,14 @@ target_include_directories(uperf-gui PRIVATE
 )
 
 target_link_libraries(uperf-gui PRIVATE
-    ${GTK4_LIBRARIES}
-    ${LIBADWAITA_LIBRARIES}
+    ${GTK4_LINK_LIBRARIES}
+    ${LIBADWAITA_LINK_LIBRARIES}
 )
 
-pkg_check_modules(GLIB2 REQUIRED glib-2.0)
-target_link_libraries(uperf-gui PRIVATE ${GLIB2_LIBRARIES})
+target_compile_options(uperf-gui PRIVATE
+    ${GTK4_CFLAGS_OTHER}
+    ${LIBADWAITA_CFLAGS_OTHER}
+)
 
 install(TARGETS uperf-gui DESTINATION /usr/local/bin)
 install(FILES uperf-gui.desktop DESTINATION share/applications)

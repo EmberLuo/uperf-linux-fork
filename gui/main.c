@@ -1,5 +1,5 @@
 #include <gtk/gtk.h>
-#include <libadwaita.h>
+#include <libadwaita-1/adwaita.h>
 #include "dbus_proxy.h"
 
 /* ----------------------------------------------------------------
@@ -19,6 +19,7 @@ typedef struct {
     GtkProgressBar *temp_bar;
     GtkWidget **freq_labels;
     GtkWidget **load_labels;
+    GtkWidget *switcher;
 } AppState;
 
 static AppState g_app;
