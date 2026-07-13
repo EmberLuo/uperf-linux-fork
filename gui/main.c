@@ -9,12 +9,12 @@
 typedef struct {
     DbusProxy *proxy;
     GtkListBox *game_list;
-    GtkTextView  *log_view;
-    GtkLabel     *lbl_mode;
-    GtkLabel     *lbl_scene;
-    GtkLabel     *lbl_heavy;
-    GtkLabel     *lbl_max_temp;
-    GtkLabel     *lbl_thermal;
+    GtkTextView *log_view;
+    GtkLabel *lbl_mode;
+    GtkLabel *lbl_scene;
+    GtkLabel *lbl_heavy;
+    GtkLabel *lbl_max_temp;
+    GtkLabel *lbl_thermal;
     GtkProgressBar *load_bar;
     GtkProgressBar *temp_bar;
     GtkWidget **freq_labels;
@@ -96,11 +96,12 @@ static void on_set_mode_clicked(GtkButton *btn, const gchar *mode) {
     refresh_display();
 }
 
-static void on_set_game_mode(GtkComboBox *cb, gpointer userdata) {
+static void on_set_game_mode(GtkDropDown *dropdown, gpointer userdata) {
+    (void)userdata;
     if (!g_app.proxy) return;
+    guint idx = gtk_drop_down_get_selected(dropdown);
     const gchar *modes[] = {"balance", "powersave", "performance"};
-    gint idx = gtk_combo_box_get_active(cb);
-    if (idx >= 0 && idx < 3) {
+    if (idx < 3) {
         dbus_proxy_set_game_mode(g_app.proxy, 0, "unknown", modes[idx]);
     }
 }
@@ -134,11 +135,8 @@ static void on_release_freq_clicked(GtkButton *btn, gpointer ud) {
     if (g_app.proxy) dbus_proxy_release_freq_override(g_app.proxy);
 }
 
-static void on_tab_switch(GtkStack *stack, GtkStackPage *page, gpointer ud) {
-    (void)stack; (void)page; (void)ud;
-}
-
 static void on_tab_clicked(GtkButton *btn, const gchar *page_name) {
+    (void)btn;
     gtk_stack_set_visible_child_name(g_app.stack, page_name);
 }
 
@@ -186,10 +184,9 @@ static GtkWidget *create_dashboard_page(void) {
         gtk_widget_set_hexpand(btn, TRUE);
         GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         GtkWidget *icon = gtk_label_new(icons[i]);
-        GtkFontWeight fw = GTK_FONT_WEIGHT_HEAVY;
-        gtk_label_set_font_weight(GTK_LABEL(icon), fw);
+        g_object_set(icon, "weight", PANGO_WEIGHT_BLACK, NULL);
         GtkWidget *lbl = gtk_label_new(labels[i]);
-        gtk_label_set_font_weight(GTK_LABEL(lbl), GTK_FONT_WEIGHT_BOLD);
+        g_object_set(lbl, "weight", PANGO_WEIGHT_BOLD, NULL);
         gtk_box_append(GTK_BOX(vbox), icon);
         gtk_box_append(GTK_BOX(vbox), lbl);
         gtk_button_set_child(GTK_BUTTON(btn), vbox);
@@ -201,13 +198,13 @@ static GtkWidget *create_dashboard_page(void) {
 
     /* Scene badge */
     g_app.lbl_scene = GTK_LABEL(gtk_label_new("IDLE"));
-    gtk_label_set_font_weight(g_app.lbl_scene, GTK_FONT_WEIGHT_BOLD);
+    g_object_set(g_app.lbl_scene, "weight", PANGO_WEIGHT_BOLD, NULL);
     gtk_label_set_css_classes(GTK_LABEL(g_app.lbl_scene), (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_app.lbl_scene));
 
     /* Heavy load */
     g_app.lbl_heavy = GTK_LABEL(gtk_label_new("Normal"));
-    gtk_label_set_font_weight(g_app.lbl_heavy, GTK_FONT_WEIGHT_BOLD);
+    g_object_set(g_app.lbl_heavy, "weight", PANGO_WEIGHT_BOLD, NULL);
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_app.lbl_heavy));
 
     /* CPU frequency grid */
@@ -260,7 +257,7 @@ static GtkWidget *create_dashboard_page(void) {
     adw_clamp_set_child(ADW_CLAMP(therm_frame), therm_box);
 
     g_app.lbl_max_temp = GTK_LABEL(gtk_label_new("-- C"));
-    gtk_label_set_font_weight(g_app.lbl_max_temp, GTK_FONT_WEIGHT_BOLD);
+    g_object_set(g_app.lbl_max_temp, "weight", PANGO_WEIGHT_BOLD, NULL);
     gtk_label_set_css_classes(GTK_LABEL(g_app.lbl_max_temp), (const gchar *[]){"heading", NULL});
     gtk_box_append(GTK_BOX(therm_box), GTK_WIDGET(g_app.lbl_max_temp));
 
@@ -281,7 +278,7 @@ static GtkWidget *create_dashboard_page(void) {
  * ---------------------------------------------------------------- */
 
 static void refresh_games(void) {
-    if (!g_app.game_list) return;
+    if (!g_app.game_list || !g_app.proxy) return;
 
     GtkWidget *child = gtk_widget_get_first_child(GTK_WIDGET(g_app.game_list));
     while (child) {
@@ -296,10 +293,10 @@ static void refresh_games(void) {
         gtk_container_set_border_width(GTK_CONTAINER(hbox), 8);
 
         GtkWidget *icon = gtk_label_new("G");
-        gtk_label_set_font_weight(GTK_LABEL(icon), GTK_FONT_WEIGHT_BOLD);
+        g_object_set(icon, "weight", PANGO_WEIGHT_BOLD, NULL);
 
         GtkWidget *name_lbl = gtk_label_new(g_app.proxy->game_comm[i]);
-        gtk_label_set_font_weight(GTK_LABEL(name_lbl), GTK_FONT_WEIGHT_BOLD);
+        g_object_set(name_lbl, "weight", PANGO_WEIGHT_BOLD, NULL);
 
         GtkWidget *detail_lbl = gtk_label_new(NULL);
         gchar detail[256];
@@ -307,23 +304,23 @@ static void refresh_games(void) {
         gtk_label_set_text(GTK_LABEL(detail_lbl), detail);
         gtk_label_set_css_classes(GTK_LABEL(detail_lbl), (const gchar *[]){"caption", NULL});
 
-        GtkWidget *combo = gtk_combo_box_string_new();
-        gtk_combo_box_string_append_literal(combo, "balance", "Balance");
-        gtk_combo_box_string_append_literal(combo, "powersave", "Powersave");
-        gtk_combo_box_string_append_literal(combo, "performance", "Performance");
+        /* Use GtkDropDown instead of deprecated gtk_combo_box_string_new */
+        gchar *choices[] = {"balance", "powersave", "performance"};
+        GtkStringList *strlist = gtk_string_list_new((const gchar *const *)choices, 3);
+        GtkWidget *dropdown = gtk_drop_down_new(G_LIST_MODEL(strlist), NULL);
+        gtk_string_list_unref(strlist);
 
-        const char *cur = g_app.proxy->game_mode[i];
+        const gchar *cur = g_app.proxy->game_mode[i];
         if (cur) {
-            gint id = gtk_combo_box_string_find_string(combo, cur);
-            if (id >= 0) gtk_combo_box_set_active(combo, id);
+            guint id = gtk_drop_down_resolve(dropdown, cur);
+            gtk_drop_down_set_selected(dropdown, id);
         }
-
-        g_signal_connect(combo, "notify::active", G_CALLBACK(on_set_game_mode), NULL);
+        g_signal_connect(dropdown, "notify::selected", G_CALLBACK(on_set_game_mode), NULL);
 
         gtk_box_append(GTK_BOX(hbox), icon);
         gtk_box_append(GTK_BOX(hbox), name_lbl);
         gtk_box_append(GTK_BOX(hbox), detail_lbl);
-        gtk_box_pack_end(GTK_BOX(hbox), combo, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(hbox), dropdown);
 
         gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
         gtk_list_box_insert(g_app.game_list, row, -1);
@@ -345,8 +342,8 @@ static GtkWidget *create_games_page(void) {
     gtk_box_append(GTK_BOX(box), hint);
 
     g_app.game_list = GTK_LIST_BOX(gtk_list_box_new());
-    gtk_widget_set_vexpand(g_app.game_list, TRUE);
-    gtk_widget_set_hexpand(g_app.game_list, TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(g_app.game_list), TRUE);
+    gtk_widget_set_hexpand(GTK_WIDGET(g_app.game_list), TRUE);
     gtk_list_box_set_selection_mode(g_app.game_list, GTK_SELECTION_NONE);
     gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_app.game_list));
 
@@ -358,7 +355,12 @@ static GtkWidget *create_games_page(void) {
  * ---------------------------------------------------------------- */
 
 static GtkWidget *create_settings_page(void) {
-    GtkWidget *prefs = adw_preferences_window_new();
+    /* Create a proper AdwPreferencesWindow with AdwPreferencesPage */
+    GtkWidget *window = adw_preferences_window_new();
+
+    /* Create a page and add it to the window */
+    GtkWidget *page = adw_preferences_page_new();
+    adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Settings");
 
     /* Helper: create a group with title and add rows */
     struct GroupDef {
@@ -400,38 +402,43 @@ static GtkWidget *create_settings_page(void) {
 
     for (int gi = 0; gi < 4; gi++) {
         GtkWidget *grp = adw_preferences_group_new();
-        adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(grp), groups[gi].title);
-        adw_preferences_window_add_page(ADW_PREFERENCES_WINDOW(prefs), grp, NULL);
+        g_object_set(grp, "title", groups[gi].title, NULL);
 
         for (int ri = 0; ri < groups[gi].nr; ri++) {
             GtkWidget *row = adw_entry_row_new();
-            adw_entry_row_set_title(ADW_ENTRY_ROW(row), groups[gi].rows[ri].name);
-            adw_entry_row_set_subtitle(ADW_ENTRY_ROW(row), groups[gi].rows[ri].desc);
-            adw_entry_row_set_numeric(ADW_ENTRY_ROW(row), TRUE);
-            GtkEntry *e = GTK_ENTRY(adw_entry_row_get_entry(ADW_ENTRY_ROW(row)));
+            g_object_set(row,
+                "title", groups[gi].rows[ri].name,
+                "subtitle", groups[gi].rows[ri].desc,
+                NULL);
+            g_object_set(row, "numeric", TRUE, NULL);
+            GtkWidget *entry = adw_entry_row_get_entry(ADW_ENTRY_ROW(row));
             if (groups[gi].rows[ri].init[0]) {
-                gtk_entry_set_text(e, groups[gi].rows[ri].init);
-                gtk_entry_set_width_chars(e, 6);
+                gtk_entry_set_text(GTK_ENTRY(entry), groups[gi].rows[ri].init);
+                gtk_entry_set_width_chars(GTK_ENTRY(entry), 6);
             }
             adw_preferences_group_add(ADW_PREFERENCES_GROUP(grp), row);
         }
+        adw_preferences_page_add(ADW_PREFERENCES_PAGE(page), grp);
     }
+
+    adw_preferences_window_add_page(ADW_PREFERENCES_WINDOW(window),
+        ADW_PREFERENCES_PAGE(page), NULL);
 
     /* Apply button in bottom sheet */
     GtkWidget *apply_btn = gtk_button_new_with_label("Apply Settings");
-    gtk_style_context_add_class(gtk_widget_get_style_context(apply_btn), "suggested-action");
     gtk_widget_set_hexpand(apply_btn, TRUE);
     gtk_button_set_css_classes(apply_btn, (const gchar *[]){"suggested-action", "pill", NULL});
     g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_apply_settings_clicked), NULL);
 
-    GtkWidget *bottom_sheet = adw_bottom_sheet_new(NULL, NULL);
     GtkWidget *bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_append(GTK_BOX(bottom_box), apply_btn);
+
+    GtkWidget *bottom_sheet = adw_bottom_sheet_new(NULL, NULL);
     adw_bottom_sheet_set_child(ADW_BOTTOM_SHEET(bottom_sheet), bottom_box);
-    adw_preferences_window_set_bottom_sheet(ADW_PREFERENCES_WINDOW(prefs),
+    adw_preferences_window_set_bottom_sheet(ADW_PREFERENCES_WINDOW(window),
         ADW_BOTTOM_SHEET(bottom_sheet));
 
-    return prefs;
+    return window;
 }
 
 /* ----------------------------------------------------------------
@@ -505,7 +512,7 @@ static GtkWidget *create_frequency_page(void) {
     /* Enable toggle */
     GtkWidget *toggle_row = adw_action_row_new();
     GtkWidget *toggle = gtk_switch_new();
-    adw_action_row_set_title(ADW_ACTION_ROW(toggle_row), "Override Enabled");
+    g_object_set(toggle_row, "title", "Override Enabled", NULL);
     adw_action_row_set_activatable_widget(ADW_ACTION_ROW(toggle_row), toggle);
     gtk_box_append(GTK_BOX(box), toggle_row);
 
