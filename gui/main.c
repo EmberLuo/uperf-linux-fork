@@ -257,10 +257,10 @@ static GtkWidget *create_dashboard_page(void) {
     gtk_widget_set_hexpand(therm_frame, TRUE);
     GtkWidget *therm_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_set_spacing(GTK_BOX(therm_box), 8);
-    gtk_widget_set_margin_top(GTK_BOX(therm_box), 12);
-    gtk_widget_set_margin_bottom(GTK_BOX(therm_box), 12);
-    gtk_widget_set_margin_start(GTK_BOX(therm_box), 12);
-    gtk_widget_set_margin_end(GTK_BOX(therm_box), 12);
+    gtk_widget_set_margin_top(GTK_WIDGET(therm_box), 12);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(therm_box), 12);
+    gtk_widget_set_margin_start(GTK_WIDGET(therm_box), 12);
+    gtk_widget_set_margin_end(GTK_WIDGET(therm_box), 12);
     adw_clamp_set_child(ADW_CLAMP(therm_frame), therm_box);
 
     g_app.lbl_max_temp = GTK_LABEL(gtk_label_new("-- C"));
