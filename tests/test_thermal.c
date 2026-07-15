@@ -139,6 +139,51 @@ TEST(test_custom_policy) {
     ASSERT_PASS("custom policy");
 }
 
+TEST(test_thermal_hysteresis) {
+    ThermalPolicy policy = thermal_default_policy();
+    ASSERT_EQ(thermal_policy_next_state(&policy, THERMAL_NORMAL, 71000),
+              THERMAL_WARNING, "enter warning");
+    ASSERT_EQ(thermal_policy_next_state(&policy, THERMAL_WARNING, 69000),
+              THERMAL_WARNING, "warning deadband");
+    ASSERT_EQ(thermal_policy_next_state(&policy, THERMAL_WARNING, 66000),
+              THERMAL_NORMAL, "leave warning below deadband");
+    ASSERT_EQ(thermal_policy_next_state(&policy, THERMAL_THROTTLED, 79000),
+              THERMAL_THROTTLED, "throttle held until recovery");
+    ASSERT_EQ(thermal_policy_next_state(&policy, THERMAL_THROTTLED, 74000),
+              THERMAL_WARNING, "leave throttle below recovery");
+    ASSERT_PASS("thermal transitions use hysteresis");
+}
+
+TEST(test_thermal_debounce) {
+    ThermalState pending = THERMAL_NORMAL;
+    int64_t since = -1;
+
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_NORMAL, THERMAL_WARNING,
+                                          &pending, &since, 1000),
+              THERMAL_NORMAL, "warning starts dwell");
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_NORMAL, THERMAL_WARNING,
+                                          &pending, &since, 1999),
+              THERMAL_NORMAL, "warning waits one second");
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_NORMAL, THERMAL_WARNING,
+                                          &pending, &since, 2000),
+              THERMAL_WARNING, "sustained warning accepted");
+
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_WARNING, THERMAL_NORMAL,
+                                          &pending, &since, 3000),
+              THERMAL_WARNING, "recovery starts dwell");
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_WARNING, THERMAL_NORMAL,
+                                          &pending, &since, 4999),
+              THERMAL_WARNING, "recovery waits two seconds");
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_WARNING, THERMAL_NORMAL,
+                                          &pending, &since, 5000),
+              THERMAL_NORMAL, "stable recovery accepted");
+
+    ASSERT_EQ(thermal_debounce_transition(THERMAL_NORMAL, THERMAL_CRITICAL,
+                                          &pending, &since, 5001),
+              THERMAL_CRITICAL, "critical escalation is immediate");
+    ASSERT_PASS("thermal transitions are time-debounced");
+}
+
 int main(void) {
     log_init(UPERF_LOG_FATAL, 0, NULL);
 
@@ -152,6 +197,8 @@ int main(void) {
     RUN_TEST(test_initial_reduction_factor);
     RUN_TEST(test_zone_classification);
     RUN_TEST(test_custom_policy);
+    RUN_TEST(test_thermal_hysteresis);
+    RUN_TEST(test_thermal_debounce);
 
     printf("\nResults: %d/%d passed, %d failed\n",
            tests_passed, tests_run, tests_failed);

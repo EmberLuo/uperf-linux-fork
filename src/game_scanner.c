@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "game_scanner.h"
 #include "log.h"
+#include "perapp_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,17 +10,17 @@
 #include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 /* Known game patterns */
 static const char *DEFAULT_PATTERNS[] = {
     "UnityMain", "GameThread", "RenderThread", "GLThread",
     "dolphin", "ppsspp", "retroarch", "wine", "proton", "miHoYo",
-    "minecraft", "gameloft", "king", "supercell",
-    "niantic", "puzzle", "quest", "legends",
-    "arena", "blaze", "rovio", "ea.games",
-    "playdead", "half-life", "steam", "epic",
-    "gta", "pubg", "fortnite", "cod",
-    "genshin", "honkai", "zzz", "arknights",
+    "hoyoverse", "minecraft", "gameloft", "supercell", "niantic",
+    "rovio", "ea.games", "playdead", "half-life", "steam_app_",
+    "gta", "pubg", "fortnite", "callofduty", "genshin", "honkai",
+    "arknights", "yuzu", "ryujinx",
     NULL
 };
 
@@ -30,6 +31,7 @@ struct GameScanner {
     GameProcess entries[MAX_GAMES];
     int nr_entries;
     char app_modes[MAX_GAMES][MAX_NAME_LEN]; /* per-app mode storage */
+    PerAppConfig perapp;
 };
 
 static void copy_truncated(char *dst, size_t dst_size, const char *src) {
@@ -42,9 +44,22 @@ static void copy_truncated(char *dst, size_t dst_size, const char *src) {
 static bool matches_pattern(GameScanner *gs, const char *text) {
     if (!text) return false;
     for (int i = 0; i < gs->nr_patterns; i++) {
-        if (strstr(text, gs->patterns[i])) return true;
+        if (strcasestr(text, gs->patterns[i])) return true;
     }
     return false;
+}
+
+static bool rule_line_matches_app(const char *line, const char *app) {
+    if (!line || !app) return false;
+    char copy[512];
+    copy_truncated(copy, sizeof(copy), line);
+    char *start = copy;
+    while (isspace((unsigned char)*start)) start++;
+    if (*start == '\0' || *start == '#') return false;
+    char *end = start;
+    while (*end && *end != ':' && !isspace((unsigned char)*end)) end++;
+    *end = '\0';
+    return strcasecmp(start, app) == 0;
 }
 
 bool game_scanner_match(const char *comm, const char *cmdline) {
@@ -78,6 +93,7 @@ void game_scanner_free(GameScanner *gs) {
     for (int i = 0; i < gs->nr_patterns; i++) {
         free(gs->patterns[i]);
     }
+    perapp_free(&gs->perapp);
     free(gs);
     log_debug("GameScanner destroyed");
 }
@@ -126,23 +142,36 @@ int game_scanner_scan(GameScanner *gs) {
 
         /* Read cmdline */
         char cmdline[512] = {0};
+        bool command_matches = false;
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/cmdline", pid);
         fp = fopen(comm_path, "r");
         if (fp) {
             size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, fp);
+            /* Only the executable/process-name token participates in game
+             * detection. Arguments can contain ordinary words or even this
+             * program's own game-pattern configuration. */
+            command_matches = matches_pattern(gs, cmdline);
             for (size_t i = 0; i < n; i++)
                 if (cmdline[i] == '\0') cmdline[i] = ' ';
             fclose(fp);
         }
 
-        if (matches_pattern(gs, comm) || matches_pattern(gs, cmdline)) {
+        PowerMode configured_mode = MODE_BALANCE;
+        bool configured = perapp_lookup_process(
+            &gs->perapp, comm, cmdline, &configured_mode);
+        if (matches_pattern(gs, comm) || command_matches ||
+            (configured && configured_mode != MODE_BALANCE)) {
             GameProcess *p = &gs->entries[count];
             p->pid = pid;
             copy_truncated(p->comm, sizeof(p->comm), comm);
             copy_truncated(p->cmdline, sizeof(p->cmdline), cmdline);
             p->package[0] = '\0';
             p->is_game = true;
-            gs->app_modes[count][0] = '\0';
+            PowerMode mode = configured ? configured_mode : MODE_BALANCE;
+            const char *mode_name = mode == MODE_POWERSAVE ? "powersave" :
+                mode == MODE_PERFORMANCE ? "performance" :
+                mode == MODE_FAST ? "fast" : "balance";
+            copy_truncated(gs->app_modes[count], MAX_NAME_LEN, mode_name);
             count++;
         }
     }
@@ -164,34 +193,7 @@ int game_scanner_get_results(GameScanner *gs, GameProcess *out, int max_entries)
 
 int game_scanner_perapp_scan(GameScanner *gs, const char *perapp_file) {
     if (!gs || !perapp_file) return -1;
-
-    /* Read per-app mode assignments from file */
-    FILE *fp = fopen(perapp_file, "r");
-    if (!fp) {
-        log_warn("perapp config not found: %s", perapp_file);
-        return 0;
-    }
-
-    char line[256];
-    int count = 0;
-    while (fgets(line, sizeof(line), fp) && count < MAX_GAMES) {
-        /* Format: comm mode */
-        char comm[64], mode[32];
-        if (sscanf(line, "%63s %31s", comm, mode) == 2) {
-            /* Find matching entry */
-            for (int i = 0; i < gs->nr_entries; i++) {
-                if (strcmp(gs->entries[i].comm, comm) == 0) {
-                    strncpy(gs->app_modes[i], mode, MAX_NAME_LEN - 1);
-                    gs->app_modes[i][MAX_NAME_LEN - 1] = '\0';
-                    count++;
-                    break;
-                }
-            }
-        }
-    }
-    fclose(fp);
-    log_debug("perapp_scan: assigned modes to %d game(s)", count);
-    return count;
+    return perapp_load(&gs->perapp, perapp_file);
 }
 
 const char *game_scanner_get_app_mode(const GameScanner *gs, const char *comm) {
@@ -202,4 +204,66 @@ const char *game_scanner_get_app_mode(const GameScanner *gs, const char *comm) {
         }
     }
     return "balance";
+}
+
+int game_scanner_set_app_mode(GameScanner *gs, const char *perapp_file,
+                              const char *comm, const char *mode) {
+    if (!gs || !perapp_file || !comm || !mode || comm[0] == '\0' ||
+        strlen(comm) >= MAX_NAME_LEN || strpbrk(comm, " \t\r\n") ||
+        (strcmp(mode, "balance") != 0 && strcmp(mode, "powersave") != 0 &&
+         strcmp(mode, "performance") != 0 && strcmp(mode, "fast") != 0))
+        return -1;
+
+    char temp_path[MAX_PATH_LEN];
+    int written = snprintf(temp_path, sizeof(temp_path), "%s.tmp.XXXXXX",
+                           perapp_file);
+    if (written < 0 || written >= (int)sizeof(temp_path)) return -1;
+    int fd = mkstemp(temp_path);
+    if (fd < 0) {
+        log_error("perapp: cannot create temporary file for %s: %s",
+                  perapp_file, strerror(errno));
+        return -1;
+    }
+    struct stat existing;
+    mode_t mode_bits = stat(perapp_file, &existing) == 0
+        ? existing.st_mode & 0777 : 0644;
+    if (fchmod(fd, mode_bits) != 0) {
+        close(fd);
+        unlink(temp_path);
+        return -1;
+    }
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        close(fd);
+        unlink(temp_path);
+        return -1;
+    }
+
+    /* New rules go first because perapp matching intentionally uses the first
+     * match. Existing comments and generic rules are retained below it. */
+    fprintf(out, "%s %s\n", comm, mode);
+    FILE *in = fopen(perapp_file, "r");
+    if (in) {
+        char line[512];
+        while (fgets(line, sizeof(line), in)) {
+            if (!rule_line_matches_app(line, comm))
+                fputs(line, out);
+        }
+        fclose(in);
+    }
+    bool write_ok = fflush(out) == 0 && fsync(fileno(out)) == 0;
+    if (fclose(out) != 0) write_ok = false;
+    if (!write_ok || rename(temp_path, perapp_file) != 0) {
+        unlink(temp_path);
+        log_error("perapp: cannot replace %s: %s", perapp_file,
+                  strerror(errno));
+        return -1;
+    }
+
+    if (perapp_load(&gs->perapp, perapp_file) < 0) return -1;
+    for (int i = 0; i < gs->nr_entries; i++) {
+        if (strcmp(gs->entries[i].comm, comm) == 0)
+            copy_truncated(gs->app_modes[i], MAX_NAME_LEN, mode);
+    }
+    return 0;
 }

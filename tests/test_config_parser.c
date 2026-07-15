@@ -99,6 +99,9 @@ TEST(test_validate_valid) {
         cfg.cpu.power_model[i].nr_cores = 1;
         cfg.cpu.power_model[i].efficiency = 350;
         cfg.cpu.power_model[i].typical_freq_mhz = 2400;
+        cfg.cpu.power_model[i].sweet_freq_mhz = 1800;
+        cfg.cpu.power_model[i].plain_freq_mhz = 1200;
+        cfg.cpu.power_model[i].free_freq_mhz = 400;
         cfg.cpu.power_model[i].typical_power_w = 1.0f;
     }
     cfg.presets[MODE_BALANCE].name[0] = 'b';
@@ -191,7 +194,12 @@ TEST(test_load_power_model) {
     ASSERT_OK(ret, "config_load for PM test");
     ASSERT_EQ(cfg.cpu.power_model[0].efficiency, 350, "PM[0] efficiency");
     ASSERT_EQ(cfg.cpu.power_model[0].nr_cores, 1, "PM[0] nr_cores");
-    ASSERT_NEAR(cfg.cpu.power_model[0].sweet_freq_mhz, 1800.0, 1.0, "PM[0] sweetFreq");
+    ASSERT_EQ((int)cfg.cpu.power_model[0].cpu_mask, 0x80, "PM[0] CPU mask");
+    ASSERT_NEAR(cfg.cpu.power_model[0].sweet_freq_mhz, 2218.0, 1.0, "PM[0] sweetFreq");
+    ASSERT_EQ(cfg.cpu.power_model[1].nr_cores, 4, "PM[1] nr_cores");
+    ASSERT_EQ((int)cfg.cpu.power_model[1].cpu_mask, 0x78, "PM[1] CPU mask");
+    ASSERT_EQ(cfg.cpu.power_model[2].nr_cores, 3, "PM[2] nr_cores");
+    ASSERT_EQ((int)cfg.cpu.power_model[2].cpu_mask, 0x07, "PM[2] CPU mask");
     ASSERT_PASS("power model parsed correctly");
 }
 
@@ -213,6 +221,8 @@ TEST(test_load_sched_rules) {
     int ret = config_load(&cfg, "config/sm8550.json");
     ASSERT_OK(ret, "config_load for rules test");
     ASSERT_GT(cfg.sched.nr_rules, 0, "rules count > 0");
+    ASSERT_EQ(cfg.sched.nr_cpumasks, 4, "cpumask group count");
+    ASSERT_EQ((int)cfg.sched.cpumasks[0].mask, 0xff, "all CPU mask");
     /* First rule should have a name and regex */
     ASSERT_GT(strlen(cfg.sched.rules[0].name), 0, "rule[0] has name");
     ASSERT_GT(strlen(cfg.sched.rules[0].regex), 0, "rule[0] has regex");

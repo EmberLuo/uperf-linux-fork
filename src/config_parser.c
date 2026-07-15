@@ -57,6 +57,30 @@ static bool parse_bool_field(struct json_object *obj, const char *field, bool de
     return json_object_get_boolean(jo);
 }
 
+static int parse_cpu_array(struct json_object *array, uint64_t *mask_out,
+                           int *cpus_out, int *nr_cpus_out) {
+    if (!array || !mask_out ||
+        !json_object_is_type(array, json_type_array))
+        return -1;
+    size_t nr = json_object_array_length(array);
+    if (nr == 0 || nr > MAX_CPUS) return -1;
+
+    uint64_t mask = 0;
+    for (size_t i = 0; i < nr; i++) {
+        struct json_object *value = json_object_array_get_idx(array, i);
+        if (!value || !json_object_is_type(value, json_type_int)) return -1;
+        int64_t cpu = json_object_get_int64(value);
+        if (cpu < 0 || cpu >= MAX_CPUS ||
+            (mask & (UINT64_C(1) << cpu)) != 0)
+            return -1;
+        mask |= UINT64_C(1) << cpu;
+        if (cpus_out) cpus_out[i] = (int)cpu;
+    }
+    *mask_out = mask;
+    if (nr_cpus_out) *nr_cpus_out = (int)nr;
+    return 0;
+}
+
 /* Map SceneState to StatePresets member pointer */
 static ActionParams *get_state_action(StatePresets *sp, SceneState scene) {
     switch (scene) {
@@ -103,6 +127,18 @@ static int parse_power_model(struct json_object *mod_obj, Config *cfg) {
             log_error("powerModel[%d]: missing 'nr'", i);
             return -1;
         }
+        struct json_object *cpus = NULL;
+        if (json_object_object_get_ex(entry, "cpus", &cpus) &&
+            parse_cpu_array(cpus, &pm->cpu_mask, NULL, NULL) < 0) {
+            log_error("powerModel[%d]: invalid 'cpus' array", i);
+            return -1;
+        }
+        const char *cpumask_name = NULL;
+        if (parse_string_field(entry, "cpumask", &cpumask_name) == 0 &&
+            cpumask_name) {
+            snprintf(pm->cpumask_name, sizeof(pm->cpumask_name), "%s",
+                     cpumask_name);
+        }
         if (parse_float_field(entry, "typicalPower", &pm->typical_power_w) < 0)
             pm->typical_power_w = 1.0f;
         if (parse_float_field(entry, "typicalFreq", &pm->typical_freq_mhz) < 0)
@@ -134,30 +170,43 @@ static int parse_action_params(struct json_object *obj, ActionParams *ap) {
             continue;
         const char *sub = k + 4;
         double d = json_object_get_double(v);
-        if (strcmp(sub, "latencyTime") == 0)
+        if (strcmp(sub, "latencyTime") == 0) {
             ap->latency_time = (float)d;
-        else if (strcmp(sub, "slowLimitPower") == 0)
+            ap->tuning_present |= ACTION_TUNE_LATENCY_TIME;
+        } else if (strcmp(sub, "slowLimitPower") == 0) {
             ap->slow_limit_power = (float)d;
-        else if (strcmp(sub, "fastLimitPower") == 0)
+            ap->tuning_present |= ACTION_TUNE_SLOW_LIMIT_POWER;
+        } else if (strcmp(sub, "fastLimitPower") == 0) {
             ap->fast_limit_power = (float)d;
-        else if (strcmp(sub, "fastLimitCapacity") == 0)
+            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_POWER;
+        } else if (strcmp(sub, "fastLimitCapacity") == 0) {
             ap->fast_limit_capacity = (float)d;
-        else if (strcmp(sub, "fastLimitRecoverScale") == 0)
+            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_CAPACITY;
+        } else if (strcmp(sub, "fastLimitRecoverScale") == 0) {
             ap->fast_limit_recover_scale = (float)d;
-        else if (strcmp(sub, "margin") == 0)
+            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE;
+        } else if (strcmp(sub, "margin") == 0) {
             ap->margin = (float)d;
-        else if (strcmp(sub, "burst") == 0)
+            ap->tuning_present |= ACTION_TUNE_MARGIN;
+        } else if (strcmp(sub, "burst") == 0) {
             ap->burst = (float)d;
-        else if (strcmp(sub, "guideCap") == 0)
-            ap->guide_cap = (bool)d;
-        else if (strcmp(sub, "limitEfficiency") == 0)
-            ap->limit_efficiency = (bool)d;
-        else if (strcmp(sub, "baseSampleTime") == 0)
+            ap->tuning_present |= ACTION_TUNE_BURST;
+        } else if (strcmp(sub, "guideCap") == 0) {
+            ap->guide_cap = json_object_get_boolean(v);
+            ap->tuning_present |= ACTION_TUNE_GUIDE_CAP;
+        } else if (strcmp(sub, "limitEfficiency") == 0) {
+            ap->limit_efficiency = json_object_get_boolean(v);
+            ap->tuning_present |= ACTION_TUNE_LIMIT_EFFICIENCY;
+        } else if (strcmp(sub, "baseSampleTime") == 0) {
             ap->base_sample_time = (float)d;
-        else if (strcmp(sub, "baseSlackTime") == 0)
+            ap->tuning_present |= ACTION_TUNE_BASE_SAMPLE_TIME;
+        } else if (strcmp(sub, "baseSlackTime") == 0) {
             ap->base_slack_time = (float)d;
-        else if (strcmp(sub, "predictThd") == 0)
+            ap->tuning_present |= ACTION_TUNE_BASE_SLACK_TIME;
+        } else if (strcmp(sub, "predictThd") == 0) {
             ap->predict_thd = (float)d;
+            ap->tuning_present |= ACTION_TUNE_PREDICT_THD;
+        }
     }
     return 0;
 }
@@ -195,6 +244,69 @@ static int parse_sysfs_knobs(struct json_object *mod_obj, Config *cfg) {
 /* ----------------------------------------------------------------
  * Sched rules parsing
  * ---------------------------------------------------------------- */
+
+static int parse_sched_cpumasks(struct json_object *mod_obj, Config *cfg) {
+    struct json_object *masks = NULL;
+    cfg->sched.nr_cpumasks = 0;
+    if (!json_object_object_get_ex(mod_obj, "cpumask", &masks)) return 0;
+    if (!json_object_is_type(masks, json_type_object)) {
+        log_error("sched.cpumask must be an object");
+        return -1;
+    }
+
+    json_object_object_foreach(masks, name, value) {
+        if (cfg->sched.nr_cpumasks >= MAX_CPU_MASK_GROUPS) {
+            log_error("Too many sched cpumask groups (maximum %d)",
+                      MAX_CPU_MASK_GROUPS);
+            return -1;
+        }
+        CpuMaskGroup *group =
+            &cfg->sched.cpumasks[cfg->sched.nr_cpumasks];
+        memset(group, 0, sizeof(*group));
+        snprintf(group->name, sizeof(group->name), "%s", name);
+        if (parse_cpu_array(value, &group->mask, group->cpus,
+                            &group->nr_cpus) < 0) {
+            log_error("sched.cpumask.%s must contain unique CPUs 0-%d",
+                      name, MAX_CPUS - 1);
+            return -1;
+        }
+        cfg->sched.nr_cpumasks++;
+    }
+    return 0;
+}
+
+static int resolve_power_model_cpumasks(Config *cfg) {
+    uint64_t assigned = 0;
+    for (int i = 0; i < cfg->cpu.nr_clusters; i++) {
+        PowerModelEntry *pm = &cfg->cpu.power_model[i];
+        if (pm->cpu_mask == 0 && pm->cpumask_name[0] != '\0') {
+            for (int j = 0; j < cfg->sched.nr_cpumasks; j++) {
+                if (strcmp(pm->cpumask_name,
+                           cfg->sched.cpumasks[j].name) == 0) {
+                    pm->cpu_mask = cfg->sched.cpumasks[j].mask;
+                    break;
+                }
+            }
+        }
+        if (!cfg->cpu.enable && pm->cpu_mask == 0) continue;
+        if (pm->cpu_mask == 0) {
+            log_error("powerModel[%d] needs 'cpus' or a valid 'cpumask'", i);
+            return -1;
+        }
+        int mask_cpus = __builtin_popcountll(pm->cpu_mask);
+        if (mask_cpus != pm->nr_cores) {
+            log_error("powerModel[%d] mask has %d CPUs but nr=%d", i,
+                      mask_cpus, pm->nr_cores);
+            return -1;
+        }
+        if ((assigned & pm->cpu_mask) != 0) {
+            log_error("powerModel[%d] CPU mask overlaps an earlier model", i);
+            return -1;
+        }
+        assigned |= pm->cpu_mask;
+    }
+    return 0;
+}
 
 static AffinityClass parse_affinity_class(const char *s) {
     if (!s) return AC_AUTO;
@@ -268,16 +380,16 @@ static int parse_sched_rules(struct json_object *mod_obj, Config *cfg) {
  * ---------------------------------------------------------------- */
 
 static PowerMode mode_from_string(const char *s) {
-    if (!s) return MODE_BALANCE;
+    if (!s) return MODE_NUM;
     if (strcmp(s, "balance") == 0)       return MODE_BALANCE;
     if (strcmp(s, "powersave") == 0)     return MODE_POWERSAVE;
     if (strcmp(s, "performance") == 0)   return MODE_PERFORMANCE;
     if (strcmp(s, "fast") == 0)          return MODE_FAST;
-    return MODE_BALANCE;
+    return MODE_NUM;
 }
 
 static SceneState scene_from_string(const char *s) {
-    if (!s) return SCENE_IDLE;
+    if (!s) return SCENE_NUM_STATES;
     if (strcmp(s, "idle") == 0)      return SCENE_IDLE;
     if (strcmp(s, "touch") == 0)     return SCENE_TOUCH;
     if (strcmp(s, "trigger") == 0)   return SCENE_TRIGGER;
@@ -285,7 +397,7 @@ static SceneState scene_from_string(const char *s) {
     if (strcmp(s, "junk") == 0)      return SCENE_JUNK;
     if (strcmp(s, "switch") == 0)    return SCENE_SWITCH;
     if (strcmp(s, "boost") == 0)     return SCENE_BOOST;
-    return SCENE_IDLE;
+    return SCENE_NUM_STATES;
 }
 
 static int parse_presets(struct json_object *cfg_obj, Config *out) {
@@ -316,6 +428,11 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
 
             /* Map state name to enum and get ActionParams pointer */
             SceneState scene = scene_from_string(state_name);
+            if (scene >= SCENE_NUM_STATES) {
+                log_warn("Unknown preset scene '%s' in mode '%s', skipping",
+                         state_name, mode_name);
+                continue;
+            }
             parse_action_params(state_obj, get_state_action(&preset->presets, scene));
         }
     }
@@ -327,25 +444,25 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
  * ---------------------------------------------------------------- */
 
 static int parse_initials(struct json_object *cfg_obj, Config *out) {
+    out->initial_latency_time       = 0.2f;
+    out->initial_slow_limit_power   = 3.0f;
+    out->initial_fast_limit_power   = 6.0f;
+    out->initial_fast_limit_capacity = 10.0f;
+    out->initial_fast_limit_recover_scale = 0.3f;
+    out->initial_margin             = 0.25f;
+    out->initial_burst              = 0.0f;
+    out->initial_guide_cap          = false;
+    out->initial_limit_efficiency   = false;
+    out->initial_base_sample_time   = 0.01f;
+    out->initial_base_slack_time    = 0.01f;
+    out->initial_predict_thd        = 0.3f;
+
     struct json_object *initials_obj;
     if (!json_object_object_get_ex(cfg_obj, "initials", &initials_obj))
         return 0;  /* Optional */
 
     struct json_object *cpu_obj;
     if (json_object_object_get_ex(initials_obj, "cpu", &cpu_obj)) {
-        out->initial_latency_time       = 0.2f;
-        out->initial_slow_limit_power   = 3.0f;
-        out->initial_fast_limit_power   = 6.0f;
-        out->initial_fast_limit_capacity = 10.0f;
-        out->initial_fast_limit_recover_scale = 0.3f;
-        out->initial_margin             = 0.25f;
-        out->initial_burst              = 0.0f;
-        out->initial_guide_cap          = false;
-        out->initial_limit_efficiency   = false;
-        out->initial_base_sample_time   = 0.01f;
-        out->initial_base_slack_time    = 0.01f;
-        out->initial_predict_thd        = 0.3f;
-
         json_object_object_foreach(cpu_obj, k, v) {
             double d = json_object_get_double(v);
             if (strcmp(k, "latencyTime") == 0)       out->initial_latency_time = (float)d;
@@ -355,8 +472,8 @@ static int parse_initials(struct json_object *cfg_obj, Config *out) {
             else if (strcmp(k, "fastLimitRecoverScale") == 0) out->initial_fast_limit_recover_scale = (float)d;
             else if (strcmp(k, "margin") == 0) out->initial_margin = (float)d;
             else if (strcmp(k, "burst") == 0) out->initial_burst = (float)d;
-            else if (strcmp(k, "guideCap") == 0) out->initial_guide_cap = (bool)d;
-            else if (strcmp(k, "limitEfficiency") == 0) out->initial_limit_efficiency = (bool)d;
+            else if (strcmp(k, "guideCap") == 0) out->initial_guide_cap = json_object_get_boolean(v);
+            else if (strcmp(k, "limitEfficiency") == 0) out->initial_limit_efficiency = json_object_get_boolean(v);
             else if (strcmp(k, "baseSampleTime") == 0) out->initial_base_sample_time = (float)d;
             else if (strcmp(k, "baseSlackTime") == 0) out->initial_base_slack_time = (float)d;
             else if (strcmp(k, "predictThd") == 0) out->initial_predict_thd = (float)d;
@@ -418,7 +535,10 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
         if (json_object_object_get_ex(sw_obj, "hintDuration", &hd)) {
             json_object_object_foreach(hd, sn, sv) {
                 SceneState scene = scene_from_string(sn);
-                out->switcher.hint_duration[scene] = json_object_get_double(sv);
+                if (scene < SCENE_NUM_STATES)
+                    out->switcher.hint_duration[scene] = json_object_get_double(sv);
+                else
+                    log_warn("Unknown hintDuration scene '%s', skipping", sn);
             }
         }
     }
@@ -444,6 +564,30 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
             out->input.gesture_delay_time = json_object_get_double(jo);
         if (json_object_object_get_ex(inp_obj, "holdEnterTime", &jo))
             out->input.hold_enter_time = json_object_get_double(jo);
+        if (json_object_object_get_ex(inp_obj, "screen_width", &jo))
+            out->input.screen_width = json_object_get_int(jo);
+        if (json_object_object_get_ex(inp_obj, "screen_height", &jo))
+            out->input.screen_height = json_object_get_int(jo);
+    }
+
+    /* Thermal module. Keep defaults when older configs omit it. */
+    out->thermal.enable = true;
+    out->thermal.warn_temp = 70000;
+    out->thermal.throttle_temp = 80000;
+    out->thermal.critical_temp = 95000;
+    out->thermal.recovery_temp = 75000;
+    struct json_object *thermal_obj;
+    if (json_object_object_get_ex(mod_obj, "thermal", &thermal_obj)) {
+        out->thermal.enable = parse_bool_field(
+            thermal_obj, "enabled",
+            parse_bool_field(thermal_obj, "enable", true));
+        parse_int_field(thermal_obj, "warn_temp", &out->thermal.warn_temp);
+        parse_int_field(thermal_obj, "throttle_temp",
+                        &out->thermal.throttle_temp);
+        parse_int_field(thermal_obj, "critical_temp",
+                        &out->thermal.critical_temp);
+        parse_int_field(thermal_obj, "recovery_temp",
+                        &out->thermal.recovery_temp);
     }
 
     return 0;
@@ -507,8 +651,10 @@ int config_load(Config *cfg, const char *path) {
     if (parse_sysfs_knobs(sysfs_obj, cfg) < 0)   goto err;
     if (json_object_object_get_ex(modules_obj, "sched", &sched_obj)) {
         cfg->sched.enable = parse_bool_field(sched_obj, "enable", true);
+        if (parse_sched_cpumasks(sched_obj, cfg) < 0) goto err;
         if (parse_sched_rules(sched_obj, cfg) < 0) goto err;
     }
+    if (resolve_power_model_cpumasks(cfg) < 0) goto err;
     if (parse_presets(root, cfg) < 0)            goto err;
     if (parse_initials(root, cfg) < 0)           goto err;
 
@@ -546,6 +692,13 @@ int config_validate(const Config *cfg) {
             log_error("Validation failed: cluster %d nr must be > 0", i);
             return -1;
         }
+        if (cfg->cpu.enable &&
+            (pm->cpu_mask == 0 ||
+             __builtin_popcountll(pm->cpu_mask) != pm->nr_cores)) {
+            log_error("Validation failed: cluster %d needs an explicit CPU "
+                      "mask containing exactly %d CPUs", i, pm->nr_cores);
+            return -1;
+        }
         if (pm->typical_freq_mhz <= 0) {
             log_error("Validation failed: cluster %d typicalFreq must be > 0", i);
             return -1;
@@ -556,6 +709,14 @@ int config_validate(const Config *cfg) {
         }
         if (pm->typical_power_w <= 0.0f) {
             log_error("Validation failed: cluster %d typicalPower must be > 0", i);
+            return -1;
+        }
+        if (pm->free_freq_mhz <= 0.0f ||
+            pm->free_freq_mhz >= pm->plain_freq_mhz ||
+            pm->plain_freq_mhz >= pm->sweet_freq_mhz ||
+            pm->sweet_freq_mhz > pm->typical_freq_mhz) {
+            log_error("Validation failed: cluster %d frequencies must satisfy "
+                      "0 < freeFreq < plainFreq < sweetFreq <= typicalFreq", i);
             return -1;
         }
     }
@@ -569,6 +730,16 @@ int config_validate(const Config *cfg) {
     }
     if (!has_preset) {
         log_error("Validation failed: no power mode presets defined");
+        return -1;
+    }
+
+    if (cfg->thermal.enable &&
+        (cfg->thermal.warn_temp <= 0 ||
+         cfg->thermal.warn_temp >= cfg->thermal.throttle_temp ||
+         cfg->thermal.throttle_temp >= cfg->thermal.critical_temp ||
+         cfg->thermal.recovery_temp <= 0 ||
+         cfg->thermal.recovery_temp >= cfg->thermal.throttle_temp)) {
+        log_error("Validation failed: invalid thermal thresholds");
         return -1;
     }
 
@@ -590,14 +761,27 @@ int config_check_paths(const Config *cfg) {
         if (!knob->enabled) continue;
         total++;
 
-        int fd = open(knob->path, O_WRONLY);
+        char concrete_path[MAX_PATH_LEN];
+        const char *path = knob->path;
+        if (strstr(knob->path, "%d")) {
+            int written = snprintf(concrete_path, sizeof(concrete_path),
+                                   knob->path, 0);
+            if (written < 0 || written >= (int)sizeof(concrete_path)) {
+                log_error("Invalid formatted config path: %s (%s)",
+                          knob->path, knob->name);
+                return -1;
+            }
+            path = concrete_path;
+        }
+
+        int fd = open(path, O_WRONLY);
         if (fd < 0) {
             if (errno == ENOENT) {
-                log_warn("Config path not found: %s (%s)", knob->path, knob->name);
+                log_warn("Config path not found: %s (%s)", path, knob->name);
                 missing++;
             } else {
                 log_error("Cannot write to config path: %s (%s): %s",
-                          knob->path, knob->name, strerror(errno));
+                          path, knob->name, strerror(errno));
                 return -1;
             }
         } else {

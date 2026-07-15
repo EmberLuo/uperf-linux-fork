@@ -43,13 +43,95 @@ struct StateMachine {
     float thermal_reduction;
 };
 
-/* Get the ActionParams for the current (mode, scene) pair */
-static ActionParams *get_action_params(StateMachine *sm, SceneState scene) {
-    (void)sm;
-    (void)scene;
-    /* TODO: return from cfg->presets[sm->current_mode].presets.actions[scene] */
-    /* For now, return a static zero-initialized params */
-    return NULL;
+static const ActionParams *get_state_preset(const StatePresets *presets,
+                                             SceneState scene) {
+    switch (scene) {
+        case SCENE_IDLE: return &presets->idle;
+        case SCENE_TOUCH: return &presets->touch;
+        case SCENE_TRIGGER: return &presets->trigger;
+        case SCENE_GESTURE: return &presets->gesture;
+        case SCENE_JUNK: return &presets->junk;
+        case SCENE_SWITCH: return &presets->switch_;
+        case SCENE_BOOST: return &presets->boost;
+        default: return NULL;
+    }
+}
+
+static void merge_action_params(ActionParams *dst, const ActionParams *src) {
+    uint32_t mask = src->tuning_present;
+#define MERGE_TUNING(bit, member) \
+    do { if (mask & (bit)) dst->member = src->member; } while (0)
+    MERGE_TUNING(ACTION_TUNE_LATENCY_TIME, latency_time);
+    MERGE_TUNING(ACTION_TUNE_SLOW_LIMIT_POWER, slow_limit_power);
+    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_POWER, fast_limit_power);
+    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_CAPACITY, fast_limit_capacity);
+    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE,
+                 fast_limit_recover_scale);
+    MERGE_TUNING(ACTION_TUNE_MARGIN, margin);
+    MERGE_TUNING(ACTION_TUNE_BURST, burst);
+    MERGE_TUNING(ACTION_TUNE_GUIDE_CAP, guide_cap);
+    MERGE_TUNING(ACTION_TUNE_LIMIT_EFFICIENCY, limit_efficiency);
+    MERGE_TUNING(ACTION_TUNE_BASE_SAMPLE_TIME, base_sample_time);
+    MERGE_TUNING(ACTION_TUNE_BASE_SLACK_TIME, base_slack_time);
+    MERGE_TUNING(ACTION_TUNE_PREDICT_THD, predict_thd);
+#undef MERGE_TUNING
+    dst->tuning_present |= mask;
+
+#define MERGE_FLAGGED(flag, member) \
+    do { if (src->flag) { dst->flag = true; dst->member = src->member; } } while (0)
+    MERGE_FLAGGED(has_gpu_max_freq, gpu_max_freq);
+    MERGE_FLAGGED(has_gpu_min_freq, gpu_min_freq);
+    MERGE_FLAGGED(has_ddr_max_freq, ddr_max_freq);
+    MERGE_FLAGGED(has_sched_boost, sched_boost_value);
+#undef MERGE_FLAGGED
+    if (src->has_governor) {
+        dst->has_governor = true;
+        memcpy(dst->governor, src->governor, sizeof(dst->governor));
+    }
+    if (src->has_cpu_freq_max) {
+        dst->has_cpu_freq_max = true;
+        memcpy(dst->cpu_freq_max, src->cpu_freq_max,
+               sizeof(dst->cpu_freq_max));
+    }
+    if (src->has_cpu_freq_min) {
+        dst->has_cpu_freq_min = true;
+        memcpy(dst->cpu_freq_min, src->cpu_freq_min,
+               sizeof(dst->cpu_freq_min));
+    }
+    if (src->has_uclamp_min) {
+        dst->has_uclamp_min = true;
+        memcpy(dst->uclamp_min, src->uclamp_min, sizeof(dst->uclamp_min));
+    }
+    if (src->has_uclamp_max) {
+        dst->has_uclamp_max = true;
+        memcpy(dst->uclamp_max, src->uclamp_max, sizeof(dst->uclamp_max));
+    }
+}
+
+static ActionParams initial_action(const Config *cfg) {
+    ActionParams action = {0};
+    action.latency_time = cfg->initial_latency_time;
+    action.slow_limit_power = cfg->initial_slow_limit_power;
+    action.fast_limit_power = cfg->initial_fast_limit_power;
+    action.fast_limit_capacity = cfg->initial_fast_limit_capacity;
+    action.fast_limit_recover_scale = cfg->initial_fast_limit_recover_scale;
+    action.margin = cfg->initial_margin;
+    action.burst = cfg->initial_burst;
+    action.guide_cap = cfg->initial_guide_cap;
+    action.limit_efficiency = cfg->initial_limit_efficiency;
+    action.base_sample_time = cfg->initial_base_sample_time;
+    action.base_slack_time = cfg->initial_base_slack_time;
+    action.predict_thd = cfg->initial_predict_thd;
+    return action;
+}
+
+/* Get the merged ActionParams for the current (mode, scene) pair. */
+static const ActionParams *get_action_params(const StateMachine *sm,
+                                              SceneState scene) {
+    if (!sm || sm->current_mode < 0 || sm->current_mode >= MODE_NUM ||
+        scene < 0 || scene >= SCENE_NUM_STATES)
+        return NULL;
+    return &sm->actions[sm->current_mode][scene];
 }
 
 StateMachine *state_machine_new(const Config *cfg) {
@@ -75,8 +157,13 @@ StateMachine *state_machine_new(const Config *cfg) {
     /* Initialize actions from presets */
     for (int m = 0; m < MODE_NUM; m++) {
         for (int s = 0; s < SCENE_NUM_STATES; s++) {
-            memset(&sm->actions[m][s], 0, sizeof(ActionParams));
-            /* TODO: populate from cfg->presets[m].presets.actions[s] */
+            ActionParams action = initial_action(cfg);
+            const StatePresets *presets = &cfg->presets[m].presets;
+            merge_action_params(&action, &presets->global);
+            const ActionParams *scene = get_state_preset(presets,
+                                                         (SceneState)s);
+            if (scene) merge_action_params(&action, scene);
+            sm->actions[m][s] = action;
         }
     }
 
@@ -157,6 +244,7 @@ SceneState state_machine_feed_event(StateMachine *sm, EventType evt) {
                 case EVT_TOUCH_UP:
                     next = SCENE_TRIGGER;
                     break;
+                case EVT_SWIPE:
                 case EVT_GESTURE:
                     next = SCENE_GESTURE;
                     break;
@@ -246,6 +334,7 @@ PowerMode state_machine_get_mode(const StateMachine *sm) {
 }
 
 void state_machine_set_mode(StateMachine *sm, PowerMode mode) {
+    if (!sm || mode < 0 || mode >= MODE_NUM) return;
     if (mode == sm->current_mode) return;
 
     log_info("Power mode changed: %d -> %d", sm->current_mode, mode);
@@ -261,26 +350,13 @@ void state_machine_set_mode(StateMachine *sm, PowerMode mode) {
 void state_machine_get_actions(const StateMachine *sm, ActionParams *out) {
     SceneState scene = sm->current_scene;
 
-    ActionParams *src = get_action_params((StateMachine *)sm, scene);
+    const ActionParams *src = get_action_params(sm, scene);
     if (src) {
         memcpy(out, src, sizeof(*out));
     } else {
         memset(out, 0, sizeof(*out));
     }
 
-    /* Apply initial defaults as base */
-    out->latency_time       = sm->cfg.initial_latency_time;
-    out->slow_limit_power   = sm->cfg.initial_slow_limit_power;
-    out->fast_limit_power   = sm->cfg.initial_fast_limit_power;
-    out->fast_limit_capacity = sm->cfg.initial_fast_limit_capacity;
-    out->fast_limit_recover_scale = sm->cfg.initial_fast_limit_recover_scale;
-    out->margin             = sm->cfg.initial_margin;
-    out->burst              = sm->cfg.initial_burst;
-    out->guide_cap          = sm->cfg.initial_guide_cap;
-    out->limit_efficiency   = sm->cfg.initial_limit_efficiency;
-    out->base_sample_time   = sm->cfg.initial_base_sample_time;
-    out->base_slack_time    = sm->cfg.initial_base_slack_time;
-    out->predict_thd        = sm->cfg.initial_predict_thd;
 }
 
 float state_machine_get_hint_duration(const StateMachine *sm, SceneState scene) {
@@ -296,8 +372,9 @@ bool state_machine_needs_boost(const StateMachine *sm, float current_load,
 
     /* Check burst slack cooldown */
     if (sm->last_boost_exit_ms > 0) {
-        /* TODO: compare against current monotonic time */
-        /* For now, skip cooldown check */
+        if (now_ms() - sm->last_boost_exit_ms <
+            (uint64_t)sm->request_burst_slack_ms)
+            return false;
     }
 
     return current_load > heavy_load_threshold;

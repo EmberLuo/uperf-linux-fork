@@ -10,14 +10,14 @@
     <!-- Current power mode: "balance", "powersave", "performance" -->
     <property name="CurrentMode" type="s" access="read">
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal"
-                  value="const"/>
+                  value="false"/>
     </property>
 
     <!-- Current scene state: "idle", "touch", "trigger", "gesture",
          "junk", "switch", "boost" -->
     <property name="CurrentScene" type="s" access="read">
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal"
-                  value="const"/>
+                  value="false"/>
     </property>
 
     <!-- Per-cluster CPU frequencies in MHz. Array length equals
@@ -41,10 +41,14 @@
     </property>
 
     <!-- List of detected game processes -->
-    <property name="GameProcesses" type="a(ii:sssss)" access="read">
+    <property name="GameProcesses" type="a(issss)" access="read">
       <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal"
                   value="false"/>
     </property>
+
+    <property name="MaxTemperature" type="i" access="read"/>
+    <property name="ThermalState" type="s" access="read"/>
+    <property name="ManualFreqOverride" type="ax" access="read"/>
 
     <!-- ============================================================
          METHODS
@@ -58,6 +62,19 @@
 
     <!-- Reload configuration file (equivalent to SIGHUP). -->
     <method name="ReloadConfig">
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="SetGameMode">
+      <arg direction="in" type="i" name="pid"/>
+      <arg direction="in" type="s" name="app"/>
+      <arg direction="in" type="s" name="mode"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="SetManualFreq">
+      <arg direction="in" type="i" name="cluster"/>
+      <arg direction="in" type="x" name="freq_hz"/>
       <arg direction="out" type="b" name="success"/>
     </method>
 
@@ -80,6 +97,11 @@
 
     <signal name="HeavyLoadStateChanged">
       <arg type="b" name="active"/>
+    </signal>
+
+    <signal name="ManualFreqChanged">
+      <arg type="i" name="cluster"/>
+      <arg type="x" name="freq_hz"/>
     </signal>
 
   </interface>

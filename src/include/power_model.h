@@ -9,6 +9,8 @@
 typedef struct {
     int    efficiency;       /* Relative single-core performance score */
     int    nr_cores;         /* Number of cores in this cluster */
+    uint64_t cpu_mask;       /* Explicit CPUs belonging to this model */
+    char   cpumask_name[32]; /* Optional modules.sched.cpumask reference */
     float  typical_power_w;  /* Single-core power at typical_freq (Watts) */
     float  typical_freq_mhz; /* Normal operating frequency (MHz) */
     float  sweet_freq_mhz;   /* Most energy-efficient frequency (MHz) */

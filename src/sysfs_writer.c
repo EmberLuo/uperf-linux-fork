@@ -26,14 +26,13 @@ struct SysfsWriter {
     WriteRequest pending[SYSFS_BATCH_MAX];
     int nr_pending;
 
-    const Config *cfg;
 };
 
 SysfsWriter *sysfs_writer_new(const Config *cfg, uint64_t batch_window_ns) {
+    (void)cfg;
     SysfsWriter *w = calloc(1, sizeof(*w));
     if (!w) return NULL;
 
-    w->cfg = cfg;
     w->batch_window_ns = batch_window_ns;
     w->last_flush_ns = now_ns();
     w->nr_pending = 0;
@@ -67,28 +66,10 @@ static int write_sysfs_value(const char *path, const char *value) {
     return 0;
 }
 
-void sysfs_writer_apply(const SysfsWriter *w, const ActionParams *params,
-                        PowerMode mode) {
-    if (!w || !params) return;
-    (void)mode;
-
-    /* Flush any pending writes before applying new params */
-    if (w->nr_pending > 0) {
-        sysfs_writer_flush((SysfsWriter*)w);
-    }
-
-    /* TODO: queue sysfs writes based on params */
-    log_debug("sysfs_writer_apply: mode=%d (batching disabled)", mode);
-}
-
 void sysfs_writer_flush(SysfsWriter *w) {
     if (!w) return;
 
     uint64_t now = now_ns();
-    if (w->batch_window_ns > 0 && now - w->last_flush_ns < w->batch_window_ns) {
-        return;  /* Still within batch window */
-    }
-
     /* Process pending writes */
     for (int i = 0; i < w->nr_pending; i++) {
         if (w->pending[i].has_value) {
@@ -114,6 +95,11 @@ int sysfs_writer_queue_raw(SysfsWriter *w, const char *path, const char *value) 
     req->has_value = true;
 
     return 0;
+}
+
+int sysfs_writer_write_raw(SysfsWriter *w, const char *path, const char *value) {
+    if (!w || !path || !value) return -1;
+    return write_sysfs_value(path, value);
 }
 
 char *sysfs_reader_read(const char *path) {

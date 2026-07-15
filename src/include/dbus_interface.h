@@ -60,6 +60,10 @@ void dbus_manager_update_games(DbusManager *mgr,
                                 const GameProcessEntry *processes,
                                 int nr);
 
+/* Borrow the current in-memory game list for diagnostics/tests. The returned
+ * pointer remains owned by the manager and is invalidated by the next update. */
+const GameProcessEntry *dbus_manager_get_games(const DbusManager *mgr, int *nr);
+
 /* Get the current mode string (for DBus property getter). */
 const char *dbus_manager_get_mode(const DbusManager *mgr);
 
@@ -82,6 +86,23 @@ typedef void (*DbusSetModeFunc)(const char *mode, void *user_data);
 void dbus_manager_set_mode_handler(DbusManager *mgr,
                                     DbusSetModeFunc callback,
                                     void *user_data);
+
+typedef gboolean (*DbusReloadConfigFunc)(void *user_data);
+void dbus_manager_set_reload_handler(DbusManager *mgr,
+                                     DbusReloadConfigFunc callback,
+                                     void *user_data);
+
+typedef gboolean (*DbusSetGameModeFunc)(pid_t pid, const char *app_name,
+                                        const char *mode, void *user_data);
+void dbus_manager_set_game_mode_handler(DbusManager *mgr,
+                                         DbusSetGameModeFunc callback,
+                                         void *user_data);
+
+typedef gboolean (*DbusSetManualFreqFunc)(int cluster, gint64 freq_hz,
+                                           void *user_data);
+void dbus_manager_set_manual_freq_handler(DbusManager *mgr,
+                                           DbusSetManualFreqFunc callback,
+                                           void *user_data);
 
 /* Update thermal state information. */
 void dbus_manager_set_thermal_state(DbusManager *mgr, int max_temp_millidegC,

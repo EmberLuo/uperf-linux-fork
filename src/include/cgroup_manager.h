@@ -1,7 +1,7 @@
 #ifndef UPERF_CGROUP_MANAGER_H
-#include <sys/types.h>
 #define UPERF_CGROUP_MANAGER_H
 
+#include <sys/types.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "config.h"

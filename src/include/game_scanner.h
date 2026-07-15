@@ -60,4 +60,8 @@ int game_scanner_perapp_scan(GameScanner *gs, const char *perapp_file);
  * Returns MODE_BALANCE if no rule matches. */
 const char *game_scanner_get_app_mode(const GameScanner *gs, const char *comm);
 
+/* Persist and immediately apply an exact per-app mode assignment. */
+int game_scanner_set_app_mode(GameScanner *gs, const char *perapp_file,
+                              const char *comm, const char *mode);
+
 #endif /* UPERF_GAME_SCANNER_H */

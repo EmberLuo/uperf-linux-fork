@@ -6,6 +6,8 @@
 #include "power_model.h"
 
 #define MAX_CLUSTERS     4
+#define MAX_CPUS         64
+#define MAX_CPU_MASK_GROUPS 8
 #define MAX_KNOBS        64
 #define MAX_RULES        32
 #define MAX_POWER_MODES  8
@@ -42,8 +44,26 @@ typedef enum {
     MODE_NUM
 } PowerMode;
 
+/* Presence bits for scalar tuning values in a preset.  A separate mask is
+ * required because zero and false are valid explicit overrides. */
+typedef enum {
+    ACTION_TUNE_LATENCY_TIME             = 1u << 0,
+    ACTION_TUNE_SLOW_LIMIT_POWER         = 1u << 1,
+    ACTION_TUNE_FAST_LIMIT_POWER         = 1u << 2,
+    ACTION_TUNE_FAST_LIMIT_CAPACITY      = 1u << 3,
+    ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE = 1u << 4,
+    ACTION_TUNE_MARGIN                   = 1u << 5,
+    ACTION_TUNE_BURST                    = 1u << 6,
+    ACTION_TUNE_GUIDE_CAP                = 1u << 7,
+    ACTION_TUNE_LIMIT_EFFICIENCY         = 1u << 8,
+    ACTION_TUNE_BASE_SAMPLE_TIME         = 1u << 9,
+    ACTION_TUNE_BASE_SLACK_TIME          = 1u << 10,
+    ACTION_TUNE_PREDICT_THD              = 1u << 11,
+} ActionTuningField;
+
 /* CPU frequency / uClamp limits for an action */
 typedef struct {
+    uint32_t     tuning_present;
     bool         has_cpu_freq_max;
     int          cpu_freq_max[MAX_CLUSTERS];  /* Hz */
     bool         has_cpu_freq_min;
@@ -151,8 +171,9 @@ typedef struct {
 /* CPU mask group */
 typedef struct {
     char    name[MAX_NAME_LEN];
-    int     cpus[MAX_CLUSTERS * 4];  /* flat list of CPU indices */
+    int     cpus[MAX_CPUS];
     int     nr_cpus;
+    uint64_t mask;
 } CpuMaskGroup;
 
 /* A single sched rule: regex + affinity class + priority profile */
@@ -167,7 +188,7 @@ typedef struct {
 /* Sched module configuration */
 typedef struct {
     bool enable;
-    CpuMaskGroup cpumasks[MAX_CLUSTERS];
+    CpuMaskGroup cpumasks[MAX_CPU_MASK_GROUPS];
     int nr_cpumasks;
     SchedRule rules[MAX_RULES];
     int nr_rules;
@@ -187,6 +208,15 @@ typedef struct {
     int nr_knobs;
 } SysfsConfig;
 
+/* Thermal thresholds configured under modules.thermal. */
+typedef struct {
+    bool enable;
+    int warn_temp;
+    int throttle_temp;
+    int critical_temp;
+    int recovery_temp;
+} ThermalConfig;
+
 /* Full config — the union of all module configs + presets */
 typedef struct {
     char meta_name[MAX_NAME_LEN];
@@ -197,6 +227,7 @@ typedef struct {
     CpuConfig       cpu;
     SysfsConfig     sysfs;
     SchedConfig     sched;
+    ThermalConfig   thermal;
 
     PowerModePreset presets[MODE_NUM];
 

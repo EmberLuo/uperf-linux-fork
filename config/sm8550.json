@@ -21,6 +21,8 @@
 
     "input": {
       "enable": true,
+      "screen_width": 3048,
+      "screen_height": 2032,
       "swipeThd": 0.03,
       "gestureThdX": 0.03,
       "gestureThdY": 0.03,
@@ -34,29 +36,32 @@
         {
           "efficiency": 350,
           "nr": 1,
-          "typicalPower": 1.2,
-          "typicalFreq": 2400,
-          "sweetFreq": 1800,
-          "plainFreq": 1400,
-          "freeFreq": 600
+          "cpumask": "prime",
+          "typicalPower": 1.4,
+          "typicalFreq": 2957,
+          "sweetFreq": 2218,
+          "plainFreq": 1626,
+          "freeFreq": 739
         },
         {
-          "efficiency": 280,
-          "nr": 2,
-          "typicalPower": 1.5,
-          "typicalFreq": 2200,
-          "sweetFreq": 1600,
-          "plainFreq": 1200,
-          "freeFreq": 500
+          "efficiency": 265,
+          "nr": 4,
+          "cpumask": "performance",
+          "typicalPower": 1.1,
+          "typicalFreq": 2803,
+          "sweetFreq": 2102,
+          "plainFreq": 1542,
+          "freeFreq": 701
         },
         {
           "efficiency": 180,
-          "nr": 5,
+          "nr": 3,
+          "cpumask": "efficiency",
           "typicalPower": 0.8,
-          "typicalFreq": 1600,
-          "sweetFreq": 1000,
-          "plainFreq": 700,
-          "freeFreq": 300
+          "typicalFreq": 2016,
+          "sweetFreq": 1512,
+          "plainFreq": 1109,
+          "freeFreq": 504
         }
       ]
     },
@@ -67,21 +72,27 @@
         "cpufreqMax": "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq",
         "cpufreqMin": "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_min_freq",
         "cpufreqGovernor": "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor",
-        "gpuMaxFreq": "/sys/class/devfreq/soc\\:qcom\\:gpu/max_freq",
-        "gpuMinFreq": "/sys/class/devfreq/soc\\:qcom\\:gpu/min_freq",
-        "gpuGovernor": "/sys/class/devfreq/soc\\:qcom\\:gpu/governor",
-        "memBwMax": "/sys/class/devfreq/soc\\:qcom\\:cpu-cpu-llcc-bw/max_freq",
-        "socMaxFreq": "/sys/class/devfreq/soc\\:qcom\\:soc/max_freq"
+        "gpuMaxFreq": "/sys/class/devfreq/3d00000.gpu/max_freq",
+        "gpuMinFreq": "/sys/class/devfreq/3d00000.gpu/min_freq",
+        "gpuGovernor": "/sys/class/devfreq/3d00000.gpu/governor"
       }
     },
 
+    "thermal": {
+      "enabled": true,
+      "warn_temp": 70000,
+      "throttle_temp": 80000,
+      "critical_temp": 95000,
+      "recovery_temp": 75000
+    },
+
     "sched": {
-      "enable": true,
+      "enable": false,
       "cpumask": {
         "all": [0,1,2,3,4,5,6,7],
-        "prime": [0],
-        "performance": [1,2],
-        "efficiency": [3,4,5,6,7]
+        "prime": [7],
+        "performance": [3,4,5,6],
+        "efficiency": [0,1,2]
       },
       "affinity": {
         "auto":  { "bg": "", "fg": "", "idle": "", "touch": "", "boost": "" },
@@ -155,15 +166,6 @@
       "burst": 0.0,
       "guideCap": false,
       "limitEfficiency": false
-    },
-    "sysfs": {
-      "cpufreqMax": "9999000",
-      "cpufreqMin": "0",
-      "gpuMaxFreq": "999900000",
-      "gpuMinFreq": "0"
-    },
-    "sched": {
-      "scene": "idle"
     }
   },
 

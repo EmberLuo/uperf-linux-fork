@@ -3,17 +3,10 @@ set -e
 
 case "$1" in
     configure)
-        mkdir -p /run/uperf-linux
-        chmod 755 /run/uperf-linux
-
-        if systemctl is-active --quiet uperf-linux.service 2>/dev/null; then
-            systemctl reload uperf-linux.service 2>/dev/null || true
-        else
-            systemctl enable uperf-linux.service 2>/dev/null || true
-            systemctl start uperf-linux.service 2>/dev/null || true
-        fi
+        systemctl daemon-reload 2>/dev/null || true
 
         echo "uperf-linux installed successfully."
+        echo "The daemon was not enabled automatically; review the generated device config first."
         echo "Start daemon: sudo systemctl start uperf-linux"
         echo "Control: uperfctl status"
         ;;
