@@ -55,7 +55,7 @@ struct InputMonitor {
 /* Calculate Euclidean distance between two points */
 static float dist(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     int dx = x2 - x1;
-    int dy = x2 - x1;
+    int dy = y2 - y1;
     return sqrtf((float)(dx * dx + dy * dy));
 }
 
@@ -297,8 +297,33 @@ int input_monitor_poll(InputMonitor *im, InputEvent *events, int max_events) {
                                 InputEvent *out = &events[event_count++];
                                 memset(out, 0, sizeof(*out));
 
-                                /* Classify: swipe? gesture? */
-                                if (distance_ratio > im->swipe_thd) {
+                                /* Check for edge gesture: touch started near screen edge */
+                                bool is_edge = false;
+                                if (im->gesture_thd_x > 0.0f) {
+                                    float left_edge  = im->screen_width  * im->gesture_thd_x;
+                                    float right_edge = im->screen_width  * (1.0f - im->gesture_thd_x);
+                                    if (im->tracker.first_x <= left_edge ||
+                                        im->tracker.first_x >= right_edge) {
+                                        is_edge = true;
+                                    }
+                                }
+                                if (!is_edge && im->gesture_thd_y > 0.0f) {
+                                    float top_edge    = im->screen_height * im->gesture_thd_y;
+                                    float bottom_edge = im->screen_height * (1.0f - im->gesture_thd_y);
+                                    if (im->tracker.first_y <= top_edge ||
+                                        im->tracker.first_y >= bottom_edge) {
+                                        is_edge = true;
+                                    }
+                                }
+
+                                /* Classify: gesture? hold? swipe? touch_up? */
+                                if (is_edge) {
+                                    out->type = EVT_GESTURE;
+                                    out->distance_ratio = distance_ratio;
+                                    log_debug("GESTURE: start=(%d,%d) dist_ratio=%.3f",
+                                              im->tracker.first_x, im->tracker.first_y,
+                                              distance_ratio);
+                                } else if (distance_ratio > im->swipe_thd) {
                                     out->type = EVT_SWIPE;
                                     out->distance_ratio = distance_ratio;
                                     out->velocity = velocity;

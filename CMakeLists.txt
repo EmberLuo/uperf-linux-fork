@@ -149,6 +149,18 @@ if(BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_thermal PRIVATE pthread)
+
+    add_executable(test_input_monitor tests/test_input_monitor.c src/log.c src/input_monitor.c)
+    target_include_directories(test_input_monitor PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    )
+    target_link_libraries(test_input_monitor PRIVATE pthread m)
+
+    add_executable(test_heavyload_detector tests/test_heavyload_detector.c src/log.c src/heavyload_detector.c)
+    target_include_directories(test_heavyload_detector PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    )
+    target_link_libraries(test_heavyload_detector PRIVATE pthread rt)
 endif()
 
 # ---- GTK4/libadwaita GUI ----

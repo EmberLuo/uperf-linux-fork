@@ -38,8 +38,35 @@ static volatile sig_atomic_t g_reload_config = 0;
 /* DBus mode change handler */
 static void dbus_mode_handler(const char *mode, void *ud) {
     (void)ud;
-    /* TODO: map mode string to PowerMode enum and call state_machine_set_mode */
-    log_info("DBus requested mode change to: %s", mode);
+    PowerMode pm;
+    if (strcmp(mode, "balance") == 0) {
+        pm = MODE_BALANCE;
+    } else if (strcmp(mode, "powersave") == 0) {
+        pm = MODE_POWERSAVE;
+    } else if (strcmp(mode, "performance") == 0) {
+        pm = MODE_PERFORMANCE;
+    } else if (strcmp(mode, "fast") == 0) {
+        pm = MODE_FAST;
+    } else {
+        log_warn("DBus requested unknown mode: %s", mode);
+        return;
+    }
+
+    log_info("DBus mode change: %s -> %d", mode, pm);
+    state_machine_set_mode(g_sm, pm);
+
+    /* Update DBus manager's mode property for signal emission */
+    if (g_dbus) {
+        dbus_manager_set_mode(g_dbus, mode);
+        /* Update scene to reflect idle reset */
+        const char *scene_names[] = {
+            "idle", "touch", "trigger", "gesture", "junk", "switch", "boost"
+        };
+        SceneState s = state_machine_get_scene(g_sm);
+        if (s < SCENE_NUM_STATES) {
+            dbus_manager_set_scene(g_dbus, scene_names[s]);
+        }
+    }
 }
 static void signal_handler(int sig) {
     if (sig == SIGINT || sig == SIGTERM || sig == SIGQUIT) {

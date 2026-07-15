@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "heavyload_detector.h"
 #include "log.h"
 
@@ -18,6 +19,12 @@ struct HeavyLoadDetector {
     CpuStat *prev_stats;
     CpuStat *curr_stats;
     int nr_cpus;
+
+    /* Per-CPU smoothed loads */
+    float  *per_cpu_smoothed_loads;
+    int     per_cpu_hist_idx[64];
+    float   per_cpu_hist[64][LOAD_HISTORY_SIZE];
+    int     per_cpu_hist_count[64];
 
     /* Load history for smoothing */
     float load_history[LOAD_HISTORY_SIZE];
@@ -104,6 +111,17 @@ HeavyLoadDetector *heavyload_detector_new(float sample_time_ms,
         return NULL;
     }
 
+    d->per_cpu_smoothed_loads = calloc(d->nr_cpus, sizeof(float));
+    if (!d->per_cpu_smoothed_loads) {
+        free(d->prev_stats);
+        free(d->curr_stats);
+        free(d);
+        return NULL;
+    }
+    memset(d->per_cpu_hist_idx, 0, sizeof(d->per_cpu_hist_idx));
+    memset(d->per_cpu_hist, 0, sizeof(d->per_cpu_hist));
+    memset(d->per_cpu_hist_count, 0, sizeof(d->per_cpu_hist_count));
+
     d->heavy_load_active = false;
     d->current_load = 0.0f;
     d->smoothed_load = 0.0f;
@@ -120,6 +138,7 @@ void heavyload_detector_free(HeavyLoadDetector *d) {
     if (!d) return;
     free(d->prev_stats);
     free(d->curr_stats);
+    free(d->per_cpu_smoothed_loads);
     log_debug("HeavyLoadDetector destroyed");
     free(d);
 }
@@ -138,10 +157,16 @@ float heavyload_detector_sample(HeavyLoadDetector *d) {
         /* CPU topology changed — reinitialize */
         free(d->prev_stats);
         free(d->curr_stats);
+        free(d->per_cpu_smoothed_loads);
         d->nr_cpus = nr;
         d->prev_stats = calloc(nr, sizeof(CpuStat));
         d->curr_stats = calloc(nr, sizeof(CpuStat));
-        if (!d->prev_stats || !d->curr_stats) return 0.0f;
+        d->per_cpu_smoothed_loads = calloc(nr, sizeof(float));
+        if (!d->prev_stats || !d->curr_stats || !d->per_cpu_smoothed_loads)
+            return 0.0f;
+        memset(d->per_cpu_hist_idx, 0, sizeof(d->per_cpu_hist_idx));
+        memset(d->per_cpu_hist, 0, sizeof(d->per_cpu_hist));
+        memset(d->per_cpu_hist_count, 0, sizeof(d->per_cpu_hist_count));
     }
 
     /* Calculate delta for each CPU */
@@ -166,6 +191,20 @@ float heavyload_detector_sample(HeavyLoadDetector *d) {
         float load_pct = (float)busy / (float)delta * 100.0f;
         total_load += load_pct;
 
+        /* Per-CPU EMA smoothing */
+        if (d->per_cpu_hist_count[i] == 0) {
+            d->per_cpu_smoothed_loads[i] = load_pct;
+        } else {
+            d->per_cpu_smoothed_loads[i] =
+                d->per_cpu_smoothed_loads[i] * 0.7f + load_pct * 0.3f;
+        }
+
+        /* Update per-CPU history ring buffer */
+        d->per_cpu_hist[i][d->per_cpu_hist_idx[i]] = d->per_cpu_smoothed_loads[i];
+        d->per_cpu_hist_idx[i] = (d->per_cpu_hist_idx[i] + 1) % LOAD_HISTORY_SIZE;
+        if (d->per_cpu_hist_count[i] < LOAD_HISTORY_SIZE)
+            d->per_cpu_hist_count[i]++;
+
         /* Store for next iteration */
         d->prev_stats[i] = d->curr_stats[i];
     }
@@ -187,7 +226,10 @@ float heavyload_detector_sample(HeavyLoadDetector *d) {
         d->load_hist_count++;
 
     /* Check heavy load state transitions */
-    uint64_t now_ms = (uint64_t)time(NULL) * 1000;  /* Placeholder — use clock_gettime */
+    struct timespec now_ts;
+    clock_gettime(CLOCK_MONOTONIC, &now_ts);
+    uint64_t now_ms = (uint64_t)now_ts.tv_sec * 1000ULL +
+                       now_ts.tv_nsec / 1000000ULL;
 
     if (!d->heavy_load_active && d->smoothed_load > d->heavy_load_threshold) {
         d->heavy_load_active = true;
@@ -221,15 +263,6 @@ float heavyload_detector_get_avg_load(const HeavyLoadDetector *d) {
 float *heavyload_detector_get_cpu_loads(const HeavyLoadDetector *d, int *nr_cpus) {
     if (!d || !nr_cpus) return NULL;
 
-    /* Return a snapshot of the last computed per-CPU loads.
-     * In the current implementation we only track the average,
-     * so this returns a single-element array with the average.
-     * TODO: store per-CPU smoothed loads. */
-    static float snapshot[64];  /* Static buffer — not thread-safe */
     *nr_cpus = d->nr_cpus;
-    float avg = d->smoothed_load;
-    for (int i = 0; i < d->nr_cpus && i < 64; i++) {
-        snapshot[i] = avg;
-    }
-    return snapshot;
+    return d->per_cpu_smoothed_loads;
 }

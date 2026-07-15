@@ -47,13 +47,27 @@ struct StateMachine {
 static int scene_idx(SceneState s) { return (int)s; }
 static int mode_idx(PowerMode m) { return (int)m; }
 
+/* Copy scene-specific ActionParams over base, only overwriting non-zero fields */
+static void action_params_overlay(ActionParams *dst, const ActionParams *src) {
+    if (src->latency_time > 0.0f)               dst->latency_time = src->latency_time;
+    if (src->slow_limit_power > 0.0f)           dst->slow_limit_power = src->slow_limit_power;
+    if (src->fast_limit_power > 0.0f)           dst->fast_limit_power = src->fast_limit_power;
+    if (src->fast_limit_capacity > 0.0f)        dst->fast_limit_capacity = src->fast_limit_capacity;
+    if (src->fast_limit_recover_scale > 0.0f)   dst->fast_limit_recover_scale = src->fast_limit_recover_scale;
+    if (src->margin > 0.0f)                     dst->margin = src->margin;
+    if (src->burst > 0.0f)                      dst->burst = src->burst;
+    if (src->guide_cap)                         dst->guide_cap = src->guide_cap;
+    if (src->limit_efficiency)                  dst->limit_efficiency = src->limit_efficiency;
+    if (src->base_sample_time > 0.0f)           dst->base_sample_time = src->base_sample_time;
+    if (src->base_slack_time > 0.0f)            dst->base_slack_time = src->base_slack_time;
+    if (src->predict_thd > 0.0f)               dst->predict_thd = src->predict_thd;
+}
+
 /* Get the ActionParams for the current (mode, scene) pair */
 static ActionParams *get_action_params(StateMachine *sm, SceneState scene) {
-    (void)sm;
-    (void)scene;
-    /* TODO: return from cfg->presets[sm->current_mode].presets.actions[scene] */
-    /* For now, return a static zero-initialized params */
-    return NULL;
+    int m = mode_idx(sm->current_mode);
+    int s = scene_idx(scene);
+    return &sm->actions[m][s];
 }
 
 StateMachine *state_machine_new(const Config *cfg) {
@@ -80,7 +94,20 @@ StateMachine *state_machine_new(const Config *cfg) {
     for (int m = 0; m < MODE_NUM; m++) {
         for (int s = 0; s < SCENE_NUM_STATES; s++) {
             memset(&sm->actions[m][s], 0, sizeof(ActionParams));
-            /* TODO: populate from cfg->presets[m].presets.actions[s] */
+            /* Start from global preset, then overlay scene-specific */
+            memcpy(&sm->actions[m][s], &cfg->presets[m].presets.global,
+                   sizeof(ActionParams));
+            SceneState scene = (SceneState)s;
+            switch (scene) {
+                case SCENE_IDLE:    action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.idle); break;
+                case SCENE_TOUCH:   action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.touch); break;
+                case SCENE_TRIGGER: action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.trigger); break;
+                case SCENE_GESTURE: action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.gesture); break;
+                case SCENE_JUNK:    action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.junk); break;
+                case SCENE_SWITCH:  action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.switch_); break;
+                case SCENE_BOOST:   action_params_overlay(&sm->actions[m][s], &cfg->presets[m].presets.boost); break;
+                default: break;
+            }
         }
     }
 
