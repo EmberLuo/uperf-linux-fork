@@ -27,7 +27,7 @@ touch-aware pacing, and power model optimization.
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                    uperf-linux daemon (root)                  │
+│                    uperf-linux daemon (root)                 │
 │                                                              │
 │  ConfigParser ←→ JSON config (hot-reload via inotify)        │
 │  InputMonitor ←→ /dev/input/event* (evdev, epoll)            │

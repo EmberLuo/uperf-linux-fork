@@ -17,7 +17,7 @@ option(BUILD_TESTS "Build tests" ON)
 
 # Find dependencies
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(JSONC REQUIRED json-c)
+pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
 
 # GLib for DBus integration (daemon side)
 find_package(PkgConfig REQUIRED)
@@ -72,7 +72,7 @@ target_include_directories(uperf-linux PRIVATE
 )
 
 target_link_libraries(uperf-linux PRIVATE m gio-2.0 dbus-1 gobject-2.0
-    ${JSONC_LIBRARIES}
+    PkgConfig::JSONC
     ${GLIB2_LIBRARIES}
     pthread
     rt
@@ -90,7 +90,7 @@ target_include_directories(uperfctl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
 )
 target_link_libraries(uperfctl PRIVATE
-    ${JSONC_LIBRARIES}
+    PkgConfig::JSONC
     pthread
 )
 
@@ -107,12 +107,16 @@ target_link_libraries(uperf-wizard PRIVATE
 if(BUILD_TESTS)
     enable_testing()
 
-    add_executable(test_config_parser tests/test_config_parser.c src/log.c)
+    add_executable(test_config_parser
+        tests/test_config_parser.c
+        src/config_parser.c
+        src/log.c
+    )
     target_include_directories(test_config_parser PRIVATE
         ${JSONC_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
-    target_link_libraries(test_config_parser PRIVATE ${JSONC_LIBRARIES} pthread)
+    target_link_libraries(test_config_parser PRIVATE PkgConfig::JSONC pthread)
 
     add_executable(test_state_machine tests/test_state_machine.c src/log.c src/state_machine.c)
     target_include_directories(test_state_machine PRIVATE
@@ -149,6 +153,18 @@ if(BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_thermal PRIVATE pthread)
+
+    add_test(NAME config_parser COMMAND test_config_parser)
+    add_test(NAME state_machine COMMAND test_state_machine)
+    add_test(NAME power_model COMMAND test_power_model)
+    add_test(NAME sysfs_writer COMMAND test_sysfs_writer)
+    add_test(NAME game_scanner COMMAND test_game_scanner)
+    add_test(NAME perapp_config COMMAND test_perapp_config)
+    add_test(NAME thermal COMMAND test_thermal)
+
+    set_tests_properties(config_parser PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()
 
 # ---- GTK4/libadwaita GUI ----

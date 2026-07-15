@@ -478,12 +478,37 @@ int config_load(Config *cfg, const char *path) {
         return -1;
     }
 
-    /* Walk the top-level structure */
+    /* Resolve module objects once, then pass each parser the level it expects. */
+    struct json_object *modules_obj = NULL;
+    struct json_object *cpu_obj = NULL;
+    struct json_object *sysfs_obj = NULL;
+    struct json_object *sched_obj = NULL;
+
+    if (!json_object_object_get_ex(root, "modules", &modules_obj)) {
+        log_error("Missing 'modules' object in config");
+        goto err;
+    }
+    if (!json_object_object_get_ex(modules_obj, "cpu", &cpu_obj)) {
+        log_error("Missing 'modules.cpu' object in config");
+        goto err;
+    }
+    if (!json_object_object_get_ex(modules_obj, "sysfs", &sysfs_obj)) {
+        log_error("Missing 'modules.sysfs' object in config");
+        goto err;
+    }
+
+    cfg->cpu.enable = parse_bool_field(cpu_obj, "enable", true);
+    cfg->sysfs.enable = parse_bool_field(sysfs_obj, "enable", true);
+
+    /* Walk the top-level structure. */
     if (parse_meta(root, cfg) < 0)               goto err;
     if (parse_switcher(root, cfg) < 0)           goto err;
-    if (parse_power_model(root, cfg) < 0)        goto err;
-    if (parse_sysfs_knobs(root, cfg) < 0)        goto err;
-    if (parse_sched_rules(root, cfg) < 0)        goto err;
+    if (parse_power_model(cpu_obj, cfg) < 0)     goto err;
+    if (parse_sysfs_knobs(sysfs_obj, cfg) < 0)   goto err;
+    if (json_object_object_get_ex(modules_obj, "sched", &sched_obj)) {
+        cfg->sched.enable = parse_bool_field(sched_obj, "enable", true);
+        if (parse_sched_rules(sched_obj, cfg) < 0) goto err;
+    }
     if (parse_presets(root, cfg) < 0)            goto err;
     if (parse_initials(root, cfg) < 0)           goto err;
 
@@ -504,19 +529,33 @@ err:
  * ---------------------------------------------------------------- */
 
 int config_validate(const Config *cfg) {
-    if (cfg->cpu.nr_clusters <= 0) {
-        log_error("Validation failed: no power model clusters defined");
+    if (!cfg) {
+        log_error("Validation failed: config is NULL");
+        return -1;
+    }
+
+    if (cfg->cpu.nr_clusters <= 0 || cfg->cpu.nr_clusters > MAX_CLUSTERS) {
+        log_error("Validation failed: cluster count must be between 1 and %d",
+                  MAX_CLUSTERS);
         return -1;
     }
 
     for (int i = 0; i < cfg->cpu.nr_clusters; i++) {
         const PowerModelEntry *pm = &cfg->cpu.power_model[i];
+        if (pm->nr_cores <= 0) {
+            log_error("Validation failed: cluster %d nr must be > 0", i);
+            return -1;
+        }
         if (pm->typical_freq_mhz <= 0) {
             log_error("Validation failed: cluster %d typicalFreq must be > 0", i);
             return -1;
         }
         if (pm->efficiency <= 0) {
             log_error("Validation failed: cluster %d efficiency must be > 0", i);
+            return -1;
+        }
+        if (pm->typical_power_w <= 0.0f) {
+            log_error("Validation failed: cluster %d typicalPower must be > 0", i);
             return -1;
         }
     }

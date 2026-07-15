@@ -95,20 +95,6 @@ static int write_file(const char *path, const char *value) {
     return 0;
 }
 
-static char *read_file(const char *path) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return NULL;
-
-    char buf[256];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) return NULL;
-    buf[n] = '\0';
-
-    char *result = strdup(buf);
-    return result;
-}
-
 int cgroup_manager_init(CgroupManager *cm) {
     if (!cm || !cm->available) return -1;
 

@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 #include <dirent.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -25,15 +24,6 @@ static inline int test_bit(int nr, const unsigned long *addr) {
 
 /* Indentation level */
 static int json_indent = 0;
-
-static void json_print(FILE *fp, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    for (int i = 0; i < json_indent; i++)
-        fputs("  ", fp);
-    vfprintf(fp, fmt, ap);
-    va_end(ap);
-}
 
 static void json_indent_in(void)  { json_indent++; }
 static void json_indent_out(void) { json_indent--; if (json_indent < 0) json_indent = 0; }
@@ -229,7 +219,7 @@ static void detect_devfreq(FILE *fp) {
                 strncmp(ent->d_name, "cpu", 3) != 0)
                 continue;
 
-            char path[256];
+            char path[512];
             snprintf(path, sizeof(path), "/sys/class/devfreq/%s/max_freq", ent->d_name);
             if (access(path, F_OK) == 0) {
                 if (nr_devfreq > 0) fprintf(fp, ",\n");
@@ -259,7 +249,7 @@ static void detect_devfreq(FILE *fp) {
                 else if (strstr(ent->d_name, "soc"))
                     strcpy(knob_name, "socMaxFreq");
                 else
-                    snprintf(knob_name, sizeof(knob_name), "%sFreq", ent->d_name);
+                    snprintf(knob_name, sizeof(knob_name), "%.59sFreq", ent->d_name);
 
                 fprintf(fp, "      \"%s\": \"/sys/class/devfreq/%s\"",
                         knob_name, escaped_name);
@@ -298,7 +288,7 @@ static void detect_thermal(FILE *fp) {
             strtol(ent->d_name + 12, &endptr, 10);
             if (*endptr != '\0') continue;
 
-            char type_path[256], temp_path[256];
+            char type_path[512], temp_path[512];
             snprintf(type_path, sizeof(type_path),
                      "/sys/class/thermal/%s/type", ent->d_name);
             snprintf(temp_path, sizeof(temp_path),
@@ -342,7 +332,7 @@ static void detect_touchscreen(FILE *fp) {
         /* Scan for event devices and check for MT capability */
         while ((ent = readdir(input_dir)) != NULL && !has_touch) {
             if (strncmp(ent->d_name, "event", 5) != 0) continue;
-            char evdev_path[256];
+            char evdev_path[512];
             snprintf(evdev_path, sizeof(evdev_path), "/dev/input/%s", ent->d_name);
             int fd = open(evdev_path, O_RDONLY);
             if (fd >= 0) {
@@ -362,7 +352,7 @@ static void detect_touchscreen(FILE *fp) {
 
     /* Try to read screen resolution from DRM/KMS or fbdev */
     int screen_w = 1080, screen_h = 2400;  /* Default for tablet */
-    char drm_path[256];
+    char drm_path[512];
     DIR *drm_dir = opendir("/sys/class/drm");
     if (drm_dir) {
         struct dirent *ent;

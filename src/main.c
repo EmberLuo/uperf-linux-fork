@@ -202,7 +202,9 @@ static int event_loop(void) {
                     /* Apply thermal reduction to frequency limits */
                     float thermal_red = state_machine_get_thermal_reduction(g_sm);
                     if (thermal_red > 0.0f && params.has_cpu_freq_max) {
-                        for (int c = 0; c < 8; c++) {  /* MAX_CLUSTERS */
+                        for (int c = 0;
+                             c < g_config.cpu.nr_clusters && c < MAX_CLUSTERS;
+                             c++) {
                             if (params.cpu_freq_max[c] > 0) {
                                 /* Scale down: reduce max freq proportionally to thermal severity */
                                 int reduced = params.cpu_freq_max[c] * (1.0f - thermal_red * 0.5f);
@@ -270,7 +272,7 @@ static int event_loop(void) {
 
 int main(int argc, char *argv[]) {
     const char *config_path = "/etc/uperf-linux/config.json";
-    LogLevel log_level = LOG_INFO;
+    LogLevel log_level = UPERF_LOG_INFO;
     const char *log_file = NULL;
     int use_journald = 0;
 

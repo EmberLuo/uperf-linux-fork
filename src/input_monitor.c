@@ -55,7 +55,7 @@ struct InputMonitor {
 /* Calculate Euclidean distance between two points */
 static float dist(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     int dx = x2 - x1;
-    int dy = x2 - x1;
+    int dy = y2 - y1;
     return sqrtf((float)(dx * dx + dy * dy));
 }
 
@@ -153,7 +153,7 @@ int input_monitor_discover_devices(InputMonitor *im) {
     while ((ent = readdir(dir)) != NULL && im->nr_devices < INPUT_MAX_DEVICES) {
         if (ent->d_name[0] != 'e') continue;  /* Skip non-event* names */
 
-        char path[MAX_PATH_LEN];
+        char path[512];
         snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
 
         if (is_touchscreen_device(path)) {

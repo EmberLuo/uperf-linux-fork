@@ -15,7 +15,6 @@
 #include <errno.h>
 
 static const char *RUN_DIR = "/run/uperf-linux";
-static const char *CONFIG_DIR = "/etc/uperf-linux";
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
@@ -73,7 +72,7 @@ static int cmd_status(void) {
         int count = 0;
         while ((ent = readdir(proc)) && count < 16) {
             if (!isdigit((unsigned char)ent->d_name[0])) continue;
-            char comm_path[MAX_PATH_LEN];
+            char comm_path[512];
             snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", ent->d_name);
             FILE *cf = fopen(comm_path, "r");
             if (cf) {
@@ -141,7 +140,10 @@ static int cmd_game_list(void) {
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
         FILE *fp = fopen(comm_path, "r");
         if (!fp) continue;
-        fgets(comm, sizeof(comm), fp);
+        if (!fgets(comm, sizeof(comm), fp)) {
+            fclose(fp);
+            continue;
+        }
         comm[strcspn(comm, "\n")] = '\0';
         fclose(fp);
 
@@ -247,7 +249,7 @@ int main(int argc, char *argv[]) {
             /* GPU: try common devfreq paths */
             const char *gpu_paths[] = {
                 "/sys/class/devfreq/soc:qcom:gpu/max_freq",
-                "/sys/class/devfreq/soc\:qcom\:gpu/max_freq",
+                "/sys/class/devfreq/3d00000.gpu/max_freq",
                 NULL
             };
             for (int p = 0; gpu_paths[p]; p++) {

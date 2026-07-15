@@ -66,6 +66,7 @@ TEST(test_load_empty_file) {
     ASSERT_EQ(cfg.nr_rules, 0, "should have 0 rules");
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("empty file loaded");
 }
 
 /* Test: load file with comments only */
@@ -78,6 +79,7 @@ TEST(test_load_comments_only) {
     ASSERT_EQ(cfg.nr_rules, 0, "should have 0 rules");
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("comments skipped");
 }
 
 /* Test: load colon-separated rules */
@@ -96,6 +98,7 @@ TEST(test_load_colon_separated) {
     ASSERT_EQ(cfg.rules[1].mode, MODE_POWERSAVE, "second mode");
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("colon-separated rules loaded");
 }
 
 /* Test: load space-separated rules */
@@ -114,6 +117,7 @@ TEST(test_load_space_separated) {
     ASSERT_EQ(cfg.rules[1].mode, MODE_PERFORMANCE, "second mode");
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("space-separated rules loaded");
 }
 
 /* Test: load with mixed formats and invalid lines */
@@ -135,6 +139,7 @@ TEST(test_load_mixed_formats) {
     ASSERT_EQ(cfg.rules[2].mode, MODE_POWERSAVE, "third");
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("mixed rules loaded");
 }
 
 /* Test: lookup by pattern match */
@@ -146,13 +151,14 @@ TEST(test_lookup_match) {
 
     ASSERT_EQ(perapp_lookup(&cfg, "com.miHoYo.GenshinImpact"), MODE_PERFORMANCE,
               "substring match should work");
-    ASSERT_EQ(perapp_lookup(&cfg, "GenshinImpact"), MODE_PERFORMANCE,
+    ASSERT_EQ(perapp_lookup(&cfg, "miHoYo"), MODE_PERFORMANCE,
               "reverse match should work");
     ASSERT_EQ(perapp_lookup(&cfg, "other.app"), MODE_BALANCE,
               "no match should return default");
 
     perapp_free(&cfg);
     remove_temp(tmp);
+    ASSERT_PASS("pattern lookup works");
 }
 
 /* Test: lookup with empty config */
@@ -161,17 +167,19 @@ TEST(test_lookup_empty) {
     memset(&cfg, 0, sizeof(cfg));
     ASSERT_EQ(perapp_lookup(&cfg, "anything"), MODE_BALANCE,
               "empty config should return balance");
+    ASSERT_PASS("empty lookup uses default");
 }
 
 /* Test: NULL safety */
 TEST(test_null_safety) {
     ASSERT_EQ(perapp_lookup(NULL, "test"), MODE_BALANCE, "NULL cfg");
     ASSERT_EQ(perapp_lookup_pid(NULL, 1), MODE_BALANCE, "NULL cfg pid");
+    ASSERT_PASS("NULL inputs handled");
 }
 
 int main(void) {
     /* Suppress log output during tests */
-    log_init(LOG_FATAL, 0, NULL);
+    log_init(UPERF_LOG_FATAL, 0, NULL);
 
     printf("=== Per-App Config Tests ===\n");
 
@@ -187,5 +195,6 @@ int main(void) {
     printf("\nResults: %d/%d passed, %d failed\n",
            tests_passed, tests_run, tests_failed);
 
+    log_shutdown();
     return tests_failed > 0 ? 1 : 0;
 }

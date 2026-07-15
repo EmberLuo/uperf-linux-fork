@@ -111,7 +111,7 @@ float power_model_select_freq(const PowerModelEntry *pm,
 float power_model_compute_system_load(const int *load_pct,
                                       const float *freq_mhz,
                                       const PowerModelEntry *power_model,
-                                      int nr_cpus) {
+                                      int nr_cpus, int nr_clusters) {
     /* system_load = Σ efficiency[i] × (load_pct[i]/100) × (freq_MHz[i]/1000)
      * This weights each CPU's contribution by its relative performance.
      *
@@ -121,7 +121,7 @@ float power_model_compute_system_load(const int *load_pct,
     float total = 0.0f;
     int cpu_idx = 0;
 
-    for (int c = 0; c < nr_cpus && power_model[c].nr_cores > 0; c++) {
+    for (int c = 0; c < nr_clusters && power_model[c].nr_cores > 0; c++) {
         int cores_in_cluster = power_model[c].nr_cores;
         for (int j = 0; j < cores_in_cluster && cpu_idx < nr_cpus; j++, cpu_idx++) {
             float load_frac = load_pct[cpu_idx] / 100.0f;
@@ -136,12 +136,12 @@ float power_model_compute_system_load(const int *load_pct,
 float power_model_total_power(const int *load_pct,
                               const float *freq_mhz,
                               const PowerModelEntry *power_model,
-                              int nr_cpus) {
+                              int nr_cpus, int nr_clusters) {
     /* Sum of per-cluster estimated power, weighted by load */
     float total = 0.0f;
     int cpu_idx = 0;
 
-    for (int c = 0; c < nr_cpus && power_model[c].nr_cores > 0; c++) {
+    for (int c = 0; c < nr_clusters && power_model[c].nr_cores > 0; c++) {
         int cores_in_cluster = power_model[c].nr_cores;
         for (int j = 0; j < cores_in_cluster && cpu_idx < nr_cpus; j++, cpu_idx++) {
             float load_frac = load_pct[cpu_idx] / 100.0f;

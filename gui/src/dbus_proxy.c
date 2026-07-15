@@ -8,36 +8,12 @@
 #define DAEMON_PATH   "/org/uperflinux/Daemon"
 #define DAEMON_IFACE  "org.uperflinux.Daemon"
 
-/* Forward declarations for functions referenced in get_type() */
-static void uperf_dbus_proxy_init(DbusProxy *self);
-static void uperf_dbus_proxy_class_init(DbusProxyClass *klass);
+G_DEFINE_TYPE(DbusProxy, uperf_dbus_proxy, G_TYPE_OBJECT)
 
 /* G_TIMEOUT_DEFAULT was removed in GLib 2.80+, use G_MAXUINT */
 #ifndef G_TIMEOUT_DEFAULT
 #define G_TIMEOUT_DEFAULT G_MAXUINT
 #endif
-
-GType uperf_dbus_proxy_get_type(void) {
-    static gsize type_id = 0;
-    if (g_once_init_enter(&type_id)) {
-        static const GTypeInfo type_info = {
-            sizeof(DbusProxyClass),
-            (GBaseInitFunc)NULL,
-            (GBaseFinalizeFunc)NULL,
-            (GClassInitFunc)uperf_dbus_proxy_class_init,
-            NULL,
-            NULL,
-            sizeof(DbusProxy),
-            0,
-            (GInstanceInitFunc)uperf_dbus_proxy_init,
-        };
-        type_id = g_type_register_static(G_TYPE_OBJECT, "DbusProxy", &type_info, 0);
-        g_once_init_leave(&type_id, type_id);
-    }
-    return type_id;
-}
-
-static gpointer uperf_dbus_proxy_parent_class = NULL;
 
 static void uperf_dbus_proxy_init(DbusProxy *self) {
     self->current_mode = g_strdup("balance");
@@ -74,7 +50,6 @@ static void proxy_finalize(GObject *obj) {
 }
 
 static void uperf_dbus_proxy_class_init(DbusProxyClass *klass) {
-    uperf_dbus_proxy_parent_class = g_type_class_peek_parent(klass);
     GObjectClass *obj_class = G_OBJECT_CLASS(klass);
     obj_class->dispose  = proxy_dispose;
     obj_class->finalize = proxy_finalize;

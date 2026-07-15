@@ -17,6 +17,22 @@ static int tests_failed = 0;
 #define ASSERT_PASS(msg) do { \
     printf("PASS\n"); tests_passed++; \
 } while(0)
+#define ASSERT_EQ(a, b, msg) do { \
+    int _actual = (int)(a); \
+    int _expected = (int)(b); \
+    if (_actual != _expected) { \
+        printf("FAIL (%s: expected %d, got %d)\n", msg, _expected, _actual); \
+        tests_failed++; return; \
+    } \
+} while(0)
+#define ASSERT_GT(a, b, msg) do { \
+    int _actual = (int)(a); \
+    int _limit = (int)(b); \
+    if (_actual <= _limit) { \
+        printf("FAIL (%s: expected >%d, got %d)\n", msg, _limit, _actual); \
+        tests_failed++; return; \
+    } \
+} while(0)
 
 /* Test: game_scanner_match with known game patterns */
 TEST(test_match_unity) {
@@ -130,27 +146,9 @@ TEST(test_get_results) {
     ASSERT_PASS("get results works");
 }
 
-static int ASSERT_EQ(int a, int b, const char *msg) {
-    if (a != b) {
-        printf("FAIL (%s: expected %d, got %d)\n", msg, b, a);
-        tests_failed++;
-        return 1;
-    }
-    return 0;
-}
-
-static int ASSERT_GT(int a, int b, const char *msg) {
-    if (a <= b) {
-        printf("FAIL (%s: expected >%d, got %d)\n", msg, b, a);
-        tests_failed++;
-        return 1;
-    }
-    return 0;
-}
-
 int main(void) {
     printf("=== game_scanner tests ===\n");
-    log_init(LOG_WARN, 0, NULL);
+    log_init(UPERF_LOG_WARN, 0, NULL);
 
     RUN_TEST(test_match_unity);
     RUN_TEST(test_match_unreal);

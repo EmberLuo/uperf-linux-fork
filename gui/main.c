@@ -1,5 +1,5 @@
 #include <gtk/gtk.h>
-#include <libadwaita-1/adwaita.h>
+#include <adwaita.h>
 #include "dbus_proxy.h"
 
 /* ----------------------------------------------------------------
@@ -23,6 +23,8 @@ typedef struct {
 } AppState;
 
 static AppState g_app;
+
+static void refresh_games(void);
 
 /* ----------------------------------------------------------------
  * Helpers
@@ -81,6 +83,7 @@ static void on_scene_changed(DbusProxy *p, gchar *m, gpointer ud) {
 static void on_stats_updated(DbusProxy *p, gpointer ud) {
     (void)p; (void)ud;
     refresh_display();
+    refresh_games();
 }
 static void on_heavy_changed(DbusProxy *p, gboolean h, gpointer ud) {
     (void)p; (void)h; (void)ud;
@@ -92,6 +95,7 @@ static void on_thermal_changed(DbusProxy *p, gint32 t, gpointer ud) {
 }
 
 static void on_set_mode_clicked(GtkButton *btn, const gchar *mode) {
+    (void)btn;
     if (g_app.proxy) dbus_proxy_set_mode(g_app.proxy, mode);
     refresh_display();
 }
@@ -118,11 +122,6 @@ static void on_clear_logs_clicked(GtkButton *btn, gpointer ud) {
     (void)btn; (void)ud;
     GtkTextBuffer *buf = gtk_text_view_get_buffer(g_app.log_view);
     gtk_text_buffer_set_text(buf, "", -1);
-}
-
-static void on_apply_settings_clicked(GtkButton *btn, gpointer ud) {
-    (void)btn; (void)ud;
-    g_debug("Apply settings clicked");
 }
 
 static void on_apply_freq_clicked(GtkButton *btn, gpointer ud) {
@@ -375,10 +374,7 @@ static GtkWidget *create_games_page(void) {
  * ---------------------------------------------------------------- */
 
 static GtkWidget *create_settings_page(void) {
-    /* Create a proper AdwPreferencesWindow with AdwPreferencesPage */
-    GtkWidget *window = adw_preferences_window_new();
-
-    /* Create a page and add it to the window */
+    /* A preferences page can be embedded directly in the main stack. */
     GtkWidget *page = adw_preferences_page_new();
     adw_preferences_page_set_title(ADW_PREFERENCES_PAGE(page), "Settings");
 
@@ -442,12 +438,9 @@ static GtkWidget *create_settings_page(void) {
             ADW_PREFERENCES_GROUP(grp));
     }
 
-    adw_preferences_window_add(ADW_PREFERENCES_WINDOW(window),
-        ADW_PREFERENCES_PAGE(page));
-
     /* Apply button removed - not available in this libadwaita 1.5 version */
 
-    return window;
+    return page;
 }
 
 /* ----------------------------------------------------------------

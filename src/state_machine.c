@@ -23,8 +23,8 @@ struct StateMachine {
     /* Per-mode, per-scene action parameters (populated from presets at init) */
     ActionParams actions[MODE_NUM][SCENE_NUM_STATES];
 
-    /* Config reference */
-    const Config *cfg;
+    /* Config snapshot. Config currently contains no owning pointers. */
+    Config cfg;
 
     /* Hint durations (seconds) */
     float hint_duration[SCENE_NUM_STATES];
@@ -43,10 +43,6 @@ struct StateMachine {
     float thermal_reduction;
 };
 
-/* Map SceneState to actions array index */
-static int scene_idx(SceneState s) { return (int)s; }
-static int mode_idx(PowerMode m) { return (int)m; }
-
 /* Get the ActionParams for the current (mode, scene) pair */
 static ActionParams *get_action_params(StateMachine *sm, SceneState scene) {
     (void)sm;
@@ -60,7 +56,7 @@ StateMachine *state_machine_new(const Config *cfg) {
     StateMachine *sm = calloc(1, sizeof(*sm));
     if (!sm) return NULL;
 
-    sm->cfg = cfg;
+    sm->cfg = *cfg;
     sm->current_scene = SCENE_IDLE;
     sm->current_mode = MODE_BALANCE;
     sm->enter_time_ms = now_ms();
@@ -136,6 +132,12 @@ SceneState state_machine_feed_event(StateMachine *sm, EventType evt) {
     SceneState old = sm->current_scene;
     SceneState next = old;
 
+    if (evt == EVT_HEAVY_LOAD_START) {
+        sm->heavy_load_active = true;
+        next = SCENE_BOOST;
+        goto transition;
+    }
+
     switch (old) {
         case SCENE_IDLE:
             switch (evt) {
@@ -208,6 +210,8 @@ SceneState state_machine_feed_event(StateMachine *sm, EventType evt) {
         case SCENE_BOOST:
             switch (evt) {
                 case EVT_HEAVY_LOAD_END:
+                    sm->heavy_load_active = false;
+                    sm->last_boost_exit_ms = now_ms();
                     next = SCENE_TOUCH;
                     break;
                 case EVT_TIMEOUT:
@@ -222,10 +226,12 @@ SceneState state_machine_feed_event(StateMachine *sm, EventType evt) {
             break;
     }
 
+transition:
     if (next != old) {
         log_debug("State transition: %d -> %d (event=%d)",
                    old, next, evt);
         sm->current_scene = next;
+        sm->enter_time_ms = now_ms();
     }
 
     return next;
@@ -247,13 +253,13 @@ void state_machine_set_mode(StateMachine *sm, PowerMode mode) {
 
     /* Reset to idle in the new mode */
     sm->current_scene = SCENE_IDLE;
+    sm->enter_time_ms = now_ms();
     sm->heavy_load_active = false;
     sm->last_boost_exit_ms = 0;
 }
 
 void state_machine_get_actions(const StateMachine *sm, ActionParams *out) {
     SceneState scene = sm->current_scene;
-    PowerMode  mode  = sm->current_mode;
 
     ActionParams *src = get_action_params((StateMachine *)sm, scene);
     if (src) {
@@ -263,18 +269,18 @@ void state_machine_get_actions(const StateMachine *sm, ActionParams *out) {
     }
 
     /* Apply initial defaults as base */
-    out->latency_time       = sm->cfg->initial_latency_time;
-    out->slow_limit_power   = sm->cfg->initial_slow_limit_power;
-    out->fast_limit_power   = sm->cfg->initial_fast_limit_power;
-    out->fast_limit_capacity = sm->cfg->initial_fast_limit_capacity;
-    out->fast_limit_recover_scale = sm->cfg->initial_fast_limit_recover_scale;
-    out->margin             = sm->cfg->initial_margin;
-    out->burst              = sm->cfg->initial_burst;
-    out->guide_cap          = sm->cfg->initial_guide_cap;
-    out->limit_efficiency   = sm->cfg->initial_limit_efficiency;
-    out->base_sample_time   = sm->cfg->initial_base_sample_time;
-    out->base_slack_time    = sm->cfg->initial_base_slack_time;
-    out->predict_thd        = sm->cfg->initial_predict_thd;
+    out->latency_time       = sm->cfg.initial_latency_time;
+    out->slow_limit_power   = sm->cfg.initial_slow_limit_power;
+    out->fast_limit_power   = sm->cfg.initial_fast_limit_power;
+    out->fast_limit_capacity = sm->cfg.initial_fast_limit_capacity;
+    out->fast_limit_recover_scale = sm->cfg.initial_fast_limit_recover_scale;
+    out->margin             = sm->cfg.initial_margin;
+    out->burst              = sm->cfg.initial_burst;
+    out->guide_cap          = sm->cfg.initial_guide_cap;
+    out->limit_efficiency   = sm->cfg.initial_limit_efficiency;
+    out->base_sample_time   = sm->cfg.initial_base_sample_time;
+    out->base_slack_time    = sm->cfg.initial_base_slack_time;
+    out->predict_thd        = sm->cfg.initial_predict_thd;
 }
 
 float state_machine_get_hint_duration(const StateMachine *sm, SceneState scene) {

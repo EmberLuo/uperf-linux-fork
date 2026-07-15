@@ -1,8 +1,10 @@
 #include "../src/include/config.h"
 #include "../src/include/log.h"
+#include "../src/include/state_machine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -29,6 +31,26 @@ static int tests_failed = 0;
 #define ASSERT_FAIL(ret, msg) do { \
     if ((ret) == 0) { \
         printf("FAIL (%s: expected non-zero, got 0)\n", msg); \
+        tests_failed++; return; \
+    } \
+} while(0)
+#define ASSERT_GT(a, b, msg) do { \
+    double _actual = (double)(a); \
+    double _limit = (double)(b); \
+    if (_actual <= _limit) { \
+        printf("FAIL (%s: expected >%.3f, got %.3f)\n", msg, _limit, _actual); \
+        tests_failed++; return; \
+    } \
+} while(0)
+#define ASSERT_NEAR(a, b, delta, msg) do { \
+    double _actual = (double)(a); \
+    double _expected = (double)(b); \
+    double _delta = (double)(delta); \
+    double _diff = _actual - _expected; \
+    if (_diff < 0) _diff = -_diff; \
+    if (_diff > _delta) { \
+        printf("FAIL (%s: expected %.3f +/- %.3f, got %.3f)\n", \
+               msg, _expected, _delta, _actual); \
         tests_failed++; return; \
     } \
 } while(0)
@@ -73,8 +95,12 @@ TEST(test_validate_valid) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 3;
-    cfg.cpu.power_model[0].efficiency = 350;
-    cfg.cpu.power_model[0].typical_freq_mhz = 2400;
+    for (int i = 0; i < cfg.cpu.nr_clusters; i++) {
+        cfg.cpu.power_model[i].nr_cores = 1;
+        cfg.cpu.power_model[i].efficiency = 350;
+        cfg.cpu.power_model[i].typical_freq_mhz = 2400;
+        cfg.cpu.power_model[i].typical_power_w = 1.0f;
+    }
     cfg.presets[MODE_BALANCE].name[0] = 'b';
 
     int ret = config_validate(&cfg);
@@ -98,7 +124,11 @@ TEST(test_validate_neg_efficiency) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 1;
+    cfg.cpu.power_model[0].nr_cores = 1;
     cfg.cpu.power_model[0].efficiency = -100;
+    cfg.cpu.power_model[0].typical_freq_mhz = 1000;
+    cfg.cpu.power_model[0].typical_power_w = 1.0f;
+    cfg.presets[MODE_BALANCE].name[0] = 'b';
 
     int ret = config_validate(&cfg);
     ASSERT_FAIL(ret, "config_validate neg efficiency");
@@ -110,8 +140,10 @@ TEST(test_validate_zero_freq) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 1;
+    cfg.cpu.power_model[0].nr_cores = 1;
     cfg.cpu.power_model[0].efficiency = 100;
     cfg.cpu.power_model[0].typical_freq_mhz = 0;
+    cfg.cpu.power_model[0].typical_power_w = 1.0f;
     cfg.presets[MODE_BALANCE].name[0] = 'b';
 
     int ret = config_validate(&cfg);
@@ -124,8 +156,10 @@ TEST(test_validate_no_presets) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 1;
+    cfg.cpu.power_model[0].nr_cores = 1;
     cfg.cpu.power_model[0].efficiency = 100;
     cfg.cpu.power_model[0].typical_freq_mhz = 1000;
+    cfg.cpu.power_model[0].typical_power_w = 1.0f;
     /* No presets defined */
 
     int ret = config_validate(&cfg);
@@ -138,8 +172,10 @@ TEST(test_validate_zero_cores) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 1;
+    cfg.cpu.power_model[0].nr_cores = 1;
     cfg.cpu.power_model[0].efficiency = 100;
     cfg.cpu.power_model[0].typical_freq_mhz = 1000;
+    cfg.cpu.power_model[0].typical_power_w = 1.0f;
     cfg.cpu.power_model[0].nr_cores = 0;
     cfg.presets[MODE_BALANCE].name[0] = 'b';
 
@@ -233,19 +269,20 @@ TEST(test_validate_neg_power) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.cpu.nr_clusters = 1;
+    cfg.cpu.power_model[0].nr_cores = 1;
     cfg.cpu.power_model[0].efficiency = 100;
     cfg.cpu.power_model[0].typical_freq_mhz = 1000;
     cfg.cpu.power_model[0].typical_power_w = -1.0f;
     cfg.presets[MODE_BALANCE].name[0] = 'b';
 
     int ret = config_validate(&cfg);
-    /* Negative power is technically invalid */
-    ASSERT_PASS("negative power test completed");
+    ASSERT_FAIL(ret, "config_validate negative power");
+    ASSERT_PASS("correctly rejects negative power");
 }
 
 int main(void) {
     printf("=== config_parser tests ===\n");
-    log_init(LOG_WARN, 0, NULL);
+    log_init(UPERF_LOG_WARN, 0, NULL);
 
     RUN_TEST(test_load_valid_config);
     RUN_TEST(test_load_missing_file);

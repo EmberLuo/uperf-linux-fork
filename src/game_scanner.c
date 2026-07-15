@@ -12,6 +12,8 @@
 
 /* Known game patterns */
 static const char *DEFAULT_PATTERNS[] = {
+    "UnityMain", "GameThread", "RenderThread", "GLThread",
+    "dolphin", "ppsspp", "retroarch", "wine", "proton", "miHoYo",
     "minecraft", "gameloft", "king", "supercell",
     "niantic", "puzzle", "quest", "legends",
     "arena", "blaze", "rovio", "ea.games",
@@ -29,6 +31,13 @@ struct GameScanner {
     int nr_entries;
     char app_modes[MAX_GAMES][MAX_NAME_LEN]; /* per-app mode storage */
 };
+
+static void copy_truncated(char *dst, size_t dst_size, const char *src) {
+    if (!dst || dst_size == 0) return;
+    size_t n = src ? strnlen(src, dst_size - 1) : 0;
+    if (n > 0) memcpy(dst, src, n);
+    dst[n] = '\0';
+}
 
 static bool matches_pattern(GameScanner *gs, const char *text) {
     if (!text) return false;
@@ -108,7 +117,10 @@ int game_scanner_scan(GameScanner *gs) {
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
         FILE *fp = fopen(comm_path, "r");
         if (!fp) continue;
-        fgets(comm, sizeof(comm), fp);
+        if (!fgets(comm, sizeof(comm), fp)) {
+            fclose(fp);
+            continue;
+        }
         comm[strcspn(comm, "\n")] = '\0';
         fclose(fp);
 
@@ -126,10 +138,8 @@ int game_scanner_scan(GameScanner *gs) {
         if (matches_pattern(gs, comm) || matches_pattern(gs, cmdline)) {
             GameProcess *p = &gs->entries[count];
             p->pid = pid;
-            strncpy(p->comm, comm, sizeof(p->comm) - 1);
-            p->comm[sizeof(p->comm) - 1] = '\0';
-            strncpy(p->cmdline, cmdline, sizeof(p->cmdline) - 1);
-            p->cmdline[sizeof(p->cmdline) - 1] = '\0';
+            copy_truncated(p->comm, sizeof(p->comm), comm);
+            copy_truncated(p->cmdline, sizeof(p->cmdline), cmdline);
             p->package[0] = '\0';
             p->is_game = true;
             gs->app_modes[count][0] = '\0';

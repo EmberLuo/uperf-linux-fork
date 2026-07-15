@@ -163,7 +163,7 @@ TEST(test_reader_trims_newline) {
 
 int main(void) {
     printf("=== sysfs_writer tests ===\n");
-    log_init(LOG_WARN, 0, NULL);
+    log_init(UPERF_LOG_WARN, 0, NULL);
 
     RUN_TEST(test_read_known_file);
     RUN_TEST(test_read_nonexistent);

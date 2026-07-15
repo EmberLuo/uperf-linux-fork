@@ -47,7 +47,7 @@ struct DbusManager {
 };
 
 /* DBus XML interface — embedded directly to avoid codegen step */
-static const gchar introspection_xml[] =
+static const gchar introspection_xml[] G_GNUC_UNUSED =
     "<?xml version=\"1.0\"?>\n"
     "<node>\n"
     "  <interface name=\"org.uperflinux.Daemon\">\n"
@@ -137,6 +137,12 @@ static void handle_set_mode(GDBusConnection      *connection,
                             GVariant             *parameters,
                             GDBusMethodInvocation *invocation,
                             gpointer              user_data) {
+    (void)connection;
+    (void)sender;
+    (void)object_path;
+    (void)interface_name;
+    (void)method_name;
+
     DbusManager *mgr = (DbusManager *)user_data;
     const char *mode;
 
@@ -171,7 +177,7 @@ static void handle_reload_config(GDBusConnection      *connection,
 }
 
 /* Method dispatcher */
-static GVariant *handle_method_call(GDBusConnection      *connection,
+static G_GNUC_UNUSED GVariant *handle_method_call(GDBusConnection      *connection,
                                     const gchar          *sender,
                                     const gchar          *object_path,
                                     const gchar          *interface_name,
@@ -214,11 +220,11 @@ static GVariant *handle_method_call(GDBusConnection      *connection,
  * Property getters — return GVariant* for property query
  * ---------------------------------------------------------------- */
 
-static GVariant *on_get_current_mode(DbusManager *mgr) {
+static G_GNUC_UNUSED GVariant *on_get_current_mode(DbusManager *mgr) {
     return g_variant_new_string(mgr->current_mode ? mgr->current_mode : "balance");
 }
 
-static GVariant *on_get_current_scene(DbusManager *mgr) {
+static G_GNUC_UNUSED GVariant *on_get_current_scene(DbusManager *mgr) {
     return g_variant_new_string(mgr->current_scene ? mgr->current_scene : "idle");
 }
 
@@ -238,7 +244,7 @@ static GVariant *on_get_cpu_loads(DbusManager *mgr) {
     return g_variant_builder_end(&builder);
 }
 
-static GVariant *on_get_is_heavy_load(DbusManager *mgr) {
+static G_GNUC_UNUSED GVariant *on_get_is_heavy_load(DbusManager *mgr) {
     return g_variant_new_boolean(mgr->heavy_load);
 }
 
@@ -257,11 +263,11 @@ static GVariant *on_get_game_processes(DbusManager *mgr) {
     return g_variant_builder_end(&builder);
 }
 
-static GVariant *on_get_max_temperature(DbusManager *mgr) {
+static G_GNUC_UNUSED GVariant *on_get_max_temperature(DbusManager *mgr) {
     return g_variant_new_int32(mgr->max_temp_millidegC);
 }
 
-static GVariant *on_get_thermal_state(DbusManager *mgr) {
+static G_GNUC_UNUSED GVariant *on_get_thermal_state(DbusManager *mgr) {
     return g_variant_new_string(mgr->thermal_state_str[0] ? mgr->thermal_state_str : "normal");
 }
 
@@ -294,7 +300,7 @@ enum {
 static GParamSpec *properties[N_PROPS] = { NULL, };
 
 /* Property query — simplified, no GObject subclassing needed */
-static void on_get_property(GObject         *object,
+static void G_GNUC_UNUSED on_get_property(GObject         *object,
                             guint            prop_id,
                             GValue          *value,
                             GParamSpec      *pspec) {
@@ -323,7 +329,7 @@ static void on_get_property(GObject         *object,
  * Stats update timer callback (emits StatsUpdated every 500ms)
  * ---------------------------------------------------------------- */
 
-static gboolean stats_timer_callback(gpointer user_data) {
+static gboolean G_GNUC_UNUSED stats_timer_callback(gpointer user_data) {
     DbusManager *mgr = (DbusManager *)user_data;
 
     GVariantBuilder freq_builder;

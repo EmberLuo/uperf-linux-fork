@@ -32,26 +32,6 @@ struct HeavyLoadDetector {
     uint64_t last_heavy_end_ms;
 };
 
-/* Read /proc/stat for a single CPU (or aggregate) */
-static int read_cpu_stat(CpuStat *stat) {
-    FILE *fp = fopen("/proc/stat", "r");
-    if (!fp) return -1;
-
-    char line[1024];
-    if (!fgets(line, sizeof(line), fp)) {
-        fclose(fp);
-        return -1;
-    }
-    fclose(fp);
-
-    /* Parse: cpu  user nice system idle iowait irq softirq steal */
-    int parsed = sscanf(line, "cpu %lu %lu %lu %lu %lu %lu %lu %lu",
-                        &stat->user, &stat->nice, &stat->system,
-                        &stat->idle, &stat->iowait, &stat->irq,
-                        &stat->softirq, &stat->steal);
-    return (parsed >= 7) ? 0 : -1;
-}
-
 /* Read per-CPU stats from /proc/stat */
 static int read_per_cpu_stats(CpuStat *stats, int nr_cpus) {
     FILE *fp = fopen("/proc/stat", "r");

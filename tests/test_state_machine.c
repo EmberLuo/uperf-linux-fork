@@ -21,6 +21,14 @@ static int tests_failed = 0;
         tests_failed++; return; \
     } \
 } while(0)
+#define ASSERT_GT(a, b, msg) do { \
+    double _actual = (double)(a); \
+    double _limit = (double)(b); \
+    if (_actual <= _limit) { \
+        printf("FAIL (%s: expected >%.3f, got %.3f)\n", msg, _limit, _actual); \
+        tests_failed++; return; \
+    } \
+} while(0)
 #define ASSERT_PASS(msg) do { \
     printf("PASS\n"); tests_passed++; \
 } while(0)
@@ -259,7 +267,7 @@ TEST(test_get_actions) {
 
 int main(void) {
     printf("=== state_machine tests ===\n");
-    log_init(LOG_WARN, 0, NULL);
+    log_init(UPERF_LOG_WARN, 0, NULL);
 
     RUN_TEST(test_create_destroy);
     RUN_TEST(test_initial_state);

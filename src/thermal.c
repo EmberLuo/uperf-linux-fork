@@ -145,8 +145,8 @@ int thermal_manager_discover_zones(ThermalManager *tm) {
         /* Store zone info */
         ThermalZone *zone = &tm->zones[tm->nr_zones];
         zone->id = (int)zone_num;
-        strncpy(zone->name, name_str, THERMAL_NAME_LEN - 1);
-        strncpy(zone->type, type_str, THERMAL_NAME_LEN - 1);
+        snprintf(zone->name, sizeof(zone->name), "%s", name_str);
+        snprintf(zone->type, sizeof(zone->type), "%s", type_str);
         zone->temp_millidegC = temp_milli;
         zone->zone_type = classify_zone(type_str);
         zone->valid = true;

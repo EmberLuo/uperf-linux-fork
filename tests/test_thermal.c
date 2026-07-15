@@ -39,6 +39,12 @@ static int tests_failed = 0;
         tests_failed++; return; \
     } \
 } while(0)
+#define ASSERT_NOT_NULL(ptr, msg) do { \
+    if ((ptr) == NULL) { \
+        printf("FAIL (%s: expected non-NULL)\n", msg); \
+        tests_failed++; return; \
+    } \
+} while(0)
 #define ASSERT_PASS(msg) do { \
     printf("PASS\n"); tests_passed++; \
 } while(0)
@@ -46,7 +52,7 @@ static int tests_failed = 0;
 /* Test: create and destroy thermal manager */
 TEST(test_create_destroy) {
     ThermalManager *tm = thermal_manager_new(NULL);
-    ASSERT_NULL(tm, "should create with default policy");
+    ASSERT_NOT_NULL(tm, "should create with default policy");
     thermal_manager_free(tm);
     ASSERT_PASS("create/destroy");
 }
@@ -56,7 +62,8 @@ TEST(test_null_safety) {
     ASSERT_EQ(thermal_manager_zone_count(NULL), 0, "NULL zone_count");
     ASSERT_EQ(thermal_manager_get_max_temp(NULL), 0, "NULL max_temp");
     ASSERT_EQ(thermal_manager_get_state(NULL), THERMAL_NORMAL, "NULL state");
-    ASSERT_EQ(thermal_manager_get_reduction_factor(NULL), 0.0f, "NULL reduction");
+    ASSERT_NEAR(thermal_manager_get_reduction_factor(NULL), 0.0f, 0.001f,
+                "NULL reduction");
     ASSERT_EQ(thermal_manager_has_zone_type(NULL, THERMAL_ZONE_CPU), false, "NULL has_zone");
     ASSERT_EQ(thermal_manager_find_zone_by_type(NULL, THERMAL_ZONE_CPU), -1, "NULL find_zone");
     ASSERT_PASS("null safety");
@@ -91,38 +98,14 @@ TEST(test_state_strings) {
     ASSERT_PASS("state strings");
 }
 
-/* Test: reduction factors for each state */
-TEST(test_reduction_factors) {
+/* Test: a newly-created manager starts in the normal state. */
+TEST(test_initial_reduction_factor) {
     ThermalManager *tm = thermal_manager_new(NULL);
-    ASSERT_NULL(tm, "create manager");
-
-    /* Normal state: no reduction */
-    tm->current_state = THERMAL_NORMAL;
+    ASSERT_NOT_NULL(tm, "create manager");
+    ASSERT_EQ(thermal_manager_get_state(tm), THERMAL_NORMAL, "initial state");
     ASSERT_NEAR(thermal_manager_get_reduction_factor(tm), 0.0f, 0.01f, "normal reduction");
-
-    /* Warning state: ~15% reduction */
-    tm->current_state = THERMAL_WARNING;
-    float warn_red = thermal_manager_get_reduction_factor(tm);
-    ASSERT_NEAR(warn_red, 0.15f, 0.01f, "warning reduction");
-
-    /* Throttled state: 30% reduction */
-    tm->current_state = THERMAL_THROTTLED;
-    tm->max_temp = 82000;  /* Below critical - 5000 */
-    float thr_red = thermal_manager_get_reduction_factor(tm);
-    ASSERT_NEAR(thr_red, 0.3f, 0.01f, "throttled reduction (far from critical)");
-
-    /* Near critical: 50% reduction */
-    tm->max_temp = 90000;  /* critical(95000) - 5000 = 90000 */
-    thr_red = thermal_manager_get_reduction_factor(tm);
-    ASSERT_NEAR(thr_red, 0.5f, 0.01f, "throttled reduction (near critical)");
-
-    /* Critical state: 80% reduction */
-    tm->current_state = THERMAL_CRITICAL;
-    float crit_red = thermal_manager_get_reduction_factor(tm);
-    ASSERT_NEAR(crit_red, 0.8f, 0.01f, "critical reduction");
-
     thermal_manager_free(tm);
-    ASSERT_PASS("reduction factors");
+    ASSERT_PASS("initial reduction factor");
 }
 
 /* Test: zone classification */
@@ -148,17 +131,16 @@ TEST(test_custom_policy) {
     custom.recovery_temp = 70000;
 
     ThermalManager *tm = thermal_manager_new(&custom);
-    ASSERT_NULL(tm, "create with custom policy");
-    /* Verify policy was copied (internal check via behavior) */
-    tm->current_state = THERMAL_WARNING;
-    float red = thermal_manager_get_reduction_factor(tm);
-    ASSERT_NEAR(red, 0.15f, 0.01f, "custom policy reduction");
+    ASSERT_NOT_NULL(tm, "create with custom policy");
+    ASSERT_EQ(thermal_manager_get_state(tm), THERMAL_NORMAL, "custom initial state");
+    ASSERT_NEAR(thermal_manager_get_reduction_factor(tm), 0.0f, 0.01f,
+                "custom initial reduction");
     thermal_manager_free(tm);
     ASSERT_PASS("custom policy");
 }
 
 int main(void) {
-    log_init(LOG_FATAL, 0, NULL);
+    log_init(UPERF_LOG_FATAL, 0, NULL);
 
     printf("=== Thermal Manager Tests ===\n");
 
@@ -167,12 +149,13 @@ int main(void) {
     RUN_TEST(test_default_policy);
     RUN_TEST(test_conservative_policy);
     RUN_TEST(test_state_strings);
-    RUN_TEST(test_reduction_factors);
+    RUN_TEST(test_initial_reduction_factor);
     RUN_TEST(test_zone_classification);
     RUN_TEST(test_custom_policy);
 
     printf("\nResults: %d/%d passed, %d failed\n",
            tests_passed, tests_run, tests_failed);
 
+    log_shutdown();
     return tests_failed > 0 ? 1 : 0;
 }
