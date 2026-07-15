@@ -565,22 +565,28 @@ static void apply_automatic_frequency_control(const float *loads,
     }
 }
 
+/* Read /proc/<pid>/comm into buf (NUL-terminated, newline stripped).
+ * Returns TRUE on success. */
+static gboolean read_pid_comm(pid_t pid, char *buf, size_t len) {
+    if (pid <= 0 || !buf || len == 0) return FALSE;
+    char proc_path[MAX_PATH_LEN];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
+    FILE *fp = fopen(proc_path, "r");
+    if (!fp) return FALSE;
+    gboolean ok = fgets(buf, (int)len, fp) != NULL;
+    fclose(fp);
+    if (!ok) return FALSE;
+    buf[strcspn(buf, "\r\n")] = '\0';
+    return TRUE;
+}
+
 static gboolean dbus_game_mode_handler(pid_t pid, const char *app_name,
                                         const char *mode, void *user_data) {
     (void)user_data;
     if (!g_scanner || pid <= 0 || !app_name || !mode) return FALSE;
 
-    char proc_path[MAX_PATH_LEN];
-    snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
-    FILE *fp = fopen(proc_path, "r");
-    if (!fp) return FALSE;
     char comm[MAX_NAME_LEN];
-    if (!fgets(comm, sizeof(comm), fp)) {
-        fclose(fp);
-        return FALSE;
-    }
-    fclose(fp);
-    comm[strcspn(comm, "\r\n")] = '\0';
+    if (!read_pid_comm(pid, comm, sizeof(comm))) return FALSE;
     if (strcmp(comm, app_name) != 0) {
         log_warn("DBus SetGameMode PID/name mismatch: %d is '%s', not '%s'",
                  pid, comm, app_name);
@@ -1031,18 +1037,45 @@ static int event_loop(void) {
             if (g_task_scheduler && g_dbus)
                 dbus_manager_set_active_pid(
                     g_dbus, task_scheduler_get_active_pid(g_task_scheduler));
-            if (g_task_scheduler && g_cgroup_manager) {
+            if (g_task_scheduler) {
                 TaskWorkload workloads[MAX_GAMES + MAX_RULES];
                 int nr_workloads = task_scheduler_get_workloads(
                     g_task_scheduler, workloads,
                     (int)(sizeof(workloads) / sizeof(workloads[0])));
-                if (nr_workloads >= 0 &&
+
+                if (nr_workloads >= 0 && g_cgroup_manager &&
                     cgroup_manager_update(g_cgroup_manager, workloads,
                                           nr_workloads) != 0 &&
                     (last_cgroup_error_log_us == 0 ||
                      policy_now_us - last_cgroup_error_log_us >= 5000000)) {
                     log_warn("Cgroup reconciliation reported errors");
                     last_cgroup_error_log_us = policy_now_us;
+                }
+
+                /* Surface scheduler status on D-Bus for the GUI. */
+                if (g_dbus && nr_workloads >= 0) {
+                    DbusWorkloadEntry entries[MAX_GAMES + MAX_RULES];
+                    int nr_entries = 0;
+                    for (int w = 0; w < nr_workloads &&
+                         nr_entries < (int)(sizeof(entries) / sizeof(entries[0]));
+                         w++) {
+                        char comm[MAX_NAME_LEN];
+                        if (!read_pid_comm(workloads[w].pid, comm, sizeof(comm)))
+                            g_strlcpy(comm, "?", sizeof(comm));
+                        entries[nr_entries].pid = (gint32)workloads[w].pid;
+                        g_strlcpy(entries[nr_entries].comm, comm,
+                                  sizeof(entries[nr_entries].comm));
+                        g_strlcpy(entries[nr_entries].cgroup_class,
+                                  workloads[w].cgroup_class[0]
+                                      ? workloads[w].cgroup_class : "—",
+                                  sizeof(entries[nr_entries].cgroup_class));
+                        nr_entries++;
+                    }
+                    dbus_manager_update_scheduler(
+                        g_dbus,
+                        task_scheduler_tracked_processes(g_task_scheduler),
+                        task_scheduler_tracked_threads(g_task_scheduler),
+                        entries, nr_entries);
                 }
             }
         }

@@ -36,6 +36,10 @@ typedef struct {
     GtkWidget  *freq_rows[UPERF_MAX_CLUSTERS];
     GtkWidget  *load_rows[UPERF_MAX_CPUS];
 
+    /* Scheduler card */
+    GtkWidget  *row_active_pid;
+    GtkWidget  *row_tracked;
+
     /* Mode selector buttons (linked group) */
     GtkWidget  *mode_buttons[4];
 
@@ -125,6 +129,21 @@ static void refresh_display(void) {
     if (g_app.row_thermal)
         adw_action_row_set_subtitle(ADW_ACTION_ROW(g_app.row_thermal),
                                     p->thermal_state ? p->thermal_state : "—");
+
+    if (g_app.row_active_pid) {
+        char buf[32];
+        if (p->active_pid > 0)
+            g_snprintf(buf, sizeof(buf), "%d", p->active_pid);
+        else
+            g_strlcpy(buf, "None", sizeof(buf));
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(g_app.row_active_pid), buf);
+    }
+    if (g_app.row_tracked) {
+        char buf[48];
+        g_snprintf(buf, sizeof(buf), "%d processes · %d threads",
+                   p->tracked_processes, p->tracked_threads);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(g_app.row_tracked), buf);
+    }
 
     for (int i = 0; i < p->nr_freqs && i < UPERF_MAX_CLUSTERS; i++) {
         if (!g_app.freq_rows[i]) continue;
@@ -321,6 +340,16 @@ static GtkWidget *create_dashboard_page(void) {
     g_app.row_scene = value_row(status, "Scene");
     g_app.row_heavy = value_row(status, "Load State");
 
+    /* --- Scheduler card (affinity / cgroup activity) --- */
+    GtkWidget *sched = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(sched), "Scheduler");
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(sched),
+        "Thread affinity and cgroup management activity.");
+    adw_preferences_page_add(ADW_PREFERENCES_PAGE(page),
+                             ADW_PREFERENCES_GROUP(sched));
+    g_app.row_active_pid = value_row(sched, "Active Foreground PID");
+    g_app.row_tracked    = value_row(sched, "Managed Processes / Threads");
+
     /* --- Per-cluster frequency card --- */
     GtkWidget *freq = adw_preferences_group_new();
     adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(freq), "Cluster Frequency");
@@ -389,8 +418,21 @@ static void refresh_games(void) {
         GtkWidget *row = adw_action_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row),
                                       g_app.proxy->game_comm[i]);
-        char sub[64];
-        g_snprintf(sub, sizeof(sub), "PID %d", g_app.proxy->game_pid[i]);
+        /* Look up the cgroup class the scheduler assigned to this PID. */
+        const char *cls = NULL;
+        for (int w = 0; w < g_app.proxy->nr_workloads; w++) {
+            if (g_app.proxy->wl_pid[w] == g_app.proxy->game_pid[i]) {
+                cls = g_app.proxy->wl_class[w];
+                break;
+            }
+        }
+        char sub[96];
+        if (cls && *cls && g_strcmp0(cls, "—") != 0)
+            g_snprintf(sub, sizeof(sub), "PID %d · class: %s",
+                       g_app.proxy->game_pid[i], cls);
+        else
+            g_snprintf(sub, sizeof(sub), "PID %d · unmanaged",
+                       g_app.proxy->game_pid[i]);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sub);
         adw_action_row_add_prefix(ADW_ACTION_ROW(row),
             gtk_image_new_from_icon_name("applications-games-symbolic"));

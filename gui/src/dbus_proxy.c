@@ -37,6 +37,14 @@ static void proxy_dispose(GObject *obj) {
     g_free(self->game_comm); self->game_comm = NULL;
     g_free(self->game_pid); self->game_pid = NULL;
     g_free(self->game_mode); self->game_mode = NULL;
+    for (int i = 0; i < self->nr_workloads; i++) {
+        g_free(self->wl_comm[i]);
+        g_free(self->wl_class[i]);
+    }
+    g_free(self->wl_pid); self->wl_pid = NULL;
+    g_free(self->wl_comm); self->wl_comm = NULL;
+    g_free(self->wl_class); self->wl_class = NULL;
+    self->nr_workloads = 0;
     G_OBJECT_CLASS(uperf_dbus_proxy_parent_class)->dispose(obj);
 }
 
@@ -112,6 +120,43 @@ static gboolean poll_properties(gpointer ud) {
         g_free(self->thermal_state);
         self->thermal_state = g_variant_dup_string(ts, NULL);
         g_variant_unref(ts);
+    }
+
+    GVariant *ap = g_dbus_proxy_get_cached_property(proxy, "ActiveProcess");
+    if (ap) {
+        self->active_pid = g_variant_get_int32(ap);
+        g_variant_unref(ap);
+    }
+
+    GVariant *ss = g_dbus_proxy_get_cached_property(proxy, "SchedulerStatus");
+    if (ss) {
+        g_variant_get(ss, "(ii)", &self->tracked_processes,
+                      &self->tracked_threads);
+        g_variant_unref(ss);
+    }
+
+    GVariant *mw = g_dbus_proxy_get_cached_property(proxy, "ManagedWorkloads");
+    if (mw) {
+        for (int i = 0; i < self->nr_workloads; i++) {
+            g_free(self->wl_comm[i]);
+            g_free(self->wl_class[i]);
+        }
+        g_free(self->wl_pid);
+        g_free(self->wl_comm);
+        g_free(self->wl_class);
+
+        gsize n = g_variant_n_children(mw);
+        self->wl_pid   = g_malloc0((n + 1) * sizeof(gint));
+        self->wl_comm  = g_malloc0((n + 1) * sizeof(gchar *));
+        self->wl_class = g_malloc0((n + 1) * sizeof(gchar *));
+        self->nr_workloads = (int)n;
+        for (gsize i = 0; i < n; i++) {
+            const gchar *comm = NULL, *cls = NULL;
+            g_variant_get_child(mw, i, "(i&s&s)", &self->wl_pid[i], &comm, &cls);
+            self->wl_comm[i]  = g_strdup(comm ? comm : "");
+            self->wl_class[i] = g_strdup(cls ? cls : "");
+        }
+        g_variant_unref(mw);
     }
 
     g_object_unref(proxy);

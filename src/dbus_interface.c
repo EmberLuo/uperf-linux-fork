@@ -54,6 +54,17 @@ struct DbusManager {
     /* Manual frequency overrides */
     gint64             manual_freq[5];
     gboolean           manual_active;
+
+    /* Task scheduler / cgroup status */
+    int                tracked_processes;
+    int                tracked_threads;
+    struct {
+        gint32 pid;
+        char   comm[64];
+        char   cgroup_class[64];
+    }                 *workloads;
+    int                nr_workloads;
+    int                workloads_cap;
 };
 
 /* DBus XML interface — embedded directly to avoid codegen step */
@@ -86,6 +97,12 @@ static const gchar introspection_xml[] =
     "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
     "    </property>\n"
     "    <property name=\"ManualFreqOverride\" type=\"ax\" access=\"read\">\n"
+    "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
+    "    </property>\n"
+    "    <property name=\"SchedulerStatus\" type=\"(ii)\" access=\"read\">\n"
+    "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
+    "    </property>\n"
+    "    <property name=\"ManagedWorkloads\" type=\"a(iss)\" access=\"read\">\n"
     "      <annotation name=\"org.freedesktop.DBus.Property.EmitsChangedSignal\" value=\"false\"/>\n"
     "    </property>\n"
     "    <property name=\"ActiveProcess\" type=\"i\" access=\"read\">\n"
@@ -374,6 +391,18 @@ static GVariant *handle_get_property(GDBusConnection *connection,
         return on_get_is_heavy_load(mgr);
     if (strcmp(property_name, "GameProcesses") == 0)
         return on_get_game_processes(mgr);
+    if (strcmp(property_name, "SchedulerStatus") == 0)
+        return g_variant_new("(ii)", mgr->tracked_processes,
+                             mgr->tracked_threads);
+    if (strcmp(property_name, "ManagedWorkloads") == 0) {
+        GVariantBuilder b;
+        g_variant_builder_init(&b, G_VARIANT_TYPE("a(iss)"));
+        for (int i = 0; i < mgr->nr_workloads; i++)
+            g_variant_builder_add(&b, "(iss)", mgr->workloads[i].pid,
+                                  mgr->workloads[i].comm,
+                                  mgr->workloads[i].cgroup_class);
+        return g_variant_builder_end(&b);
+    }
     if (strcmp(property_name, "MaxTemperature") == 0)
         return on_get_max_temperature(mgr);
     if (strcmp(property_name, "ThermalState") == 0)
@@ -534,6 +563,7 @@ void dbus_manager_free(DbusManager *mgr) {
             game_process_entry_clear(&mgr->games[i]);
         free(mgr->games);
     }
+    free(mgr->workloads);
     free(mgr);
     log_debug("DBus manager destroyed");
 }
@@ -628,6 +658,36 @@ void dbus_manager_update_games(DbusManager *mgr,
         mgr->games[i] = replacement;
     }
     mgr->nr_games = nr;
+}
+
+void dbus_manager_update_scheduler(DbusManager *mgr,
+                                   int tracked_processes, int tracked_threads,
+                                   const DbusWorkloadEntry *workloads, int nr) {
+    if (!mgr || nr < 0 || (nr > 0 && !workloads)) return;
+
+    mgr->tracked_processes = tracked_processes;
+    mgr->tracked_threads = tracked_threads;
+
+    if (nr > mgr->workloads_cap) {
+        int new_cap = nr <= G_MAXINT / 2 ? nr * 2 : nr;
+        void *grown = realloc(mgr->workloads,
+                              (size_t)new_cap * sizeof(*mgr->workloads));
+        if (!grown) {
+            log_error("DBus: cannot grow workload list to %d entries", new_cap);
+            return;
+        }
+        mgr->workloads = grown;
+        mgr->workloads_cap = new_cap;
+    }
+
+    for (int i = 0; i < nr; i++) {
+        mgr->workloads[i].pid = workloads[i].pid;
+        g_strlcpy(mgr->workloads[i].comm, workloads[i].comm,
+                  sizeof(mgr->workloads[i].comm));
+        g_strlcpy(mgr->workloads[i].cgroup_class, workloads[i].cgroup_class,
+                  sizeof(mgr->workloads[i].cgroup_class));
+    }
+    mgr->nr_workloads = nr;
 }
 
 const GameProcessEntry *dbus_manager_get_games(const DbusManager *mgr, int *nr) {

@@ -26,6 +26,15 @@ struct _DbusProxy {
     gint    *game_pid;
     gchar  **game_mode;
     int      nr_games;
+
+    /* Task scheduler / cgroup status */
+    gint     active_pid;
+    gint     tracked_processes;
+    gint     tracked_threads;
+    gint    *wl_pid;
+    gchar  **wl_comm;
+    gchar  **wl_class;
+    int      nr_workloads;
     GDBusConnection *bus;
     guint            poll_id;
     guint            stats_poll_id;

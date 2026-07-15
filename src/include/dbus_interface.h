@@ -60,6 +60,19 @@ void dbus_manager_update_games(DbusManager *mgr,
                                 const GameProcessEntry *processes,
                                 int nr);
 
+/* One managed process, for the ManagedWorkloads property. */
+typedef struct {
+    gint32 pid;
+    char   comm[64];
+    char   cgroup_class[64];
+} DbusWorkloadEntry;
+
+/* Publish task-scheduler status: tracked counts and the per-process cgroup
+ * class assignments currently in effect. */
+void dbus_manager_update_scheduler(DbusManager *mgr,
+                                   int tracked_processes, int tracked_threads,
+                                   const DbusWorkloadEntry *workloads, int nr);
+
 /* Borrow the current in-memory game list for diagnostics/tests. The returned
  * pointer remains owned by the manager and is invalidated by the next update. */
 const GameProcessEntry *dbus_manager_get_games(const DbusManager *mgr, int *nr);

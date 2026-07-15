@@ -51,6 +51,19 @@
     <property name="ManualFreqOverride" type="ax" access="read"/>
     <property name="ActiveProcess" type="i" access="read"/>
 
+    <!-- Task scheduler status: (tracked_processes, tracked_threads). -->
+    <property name="SchedulerStatus" type="(ii)" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal"
+                  value="false"/>
+    </property>
+
+    <!-- Processes currently managed by the scheduler/cgroup layer.
+         Each entry is (pid, comm, cgroup_class). -->
+    <property name="ManagedWorkloads" type="a(iss)" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal"
+                  value="false"/>
+    </property>
+
     <!-- ============================================================
          METHODS
          ============================================================ -->
