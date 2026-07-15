@@ -337,6 +337,6 @@ set(CPACK_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
     GROUP_READ GROUP_EXECUTE
     WORLD_READ WORLD_EXECUTE
 )
-# Disable automatic shlibdeps to avoid pulling in Qt6 runtime deps from the GUI build
+# Runtime dependencies are declared explicitly above for predictable ARM64 packages.
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 include(CPack)
