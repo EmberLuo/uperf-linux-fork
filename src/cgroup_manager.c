@@ -8,9 +8,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <linux/sched.h>
+#include <linux/sched/types.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
-#include <sched.h>
 
 #define CGROUP_ROOT "/sys/fs/cgroup"
 #define CGROUP_PATH_LEN (MAX_PATH_LEN + 64)
@@ -21,6 +23,36 @@ struct CgroupManager {
     char root_path[CGROUP_PATH_LEN];
     char paths[SLICE_NUM][CGROUP_PATH_LEN];
 };
+
+/* sched_{get,set}attr wrappers were added to glibc after the syscalls and are
+ * not available on Ubuntu 24.04.  Call the Linux ABI directly so the daemon
+ * builds consistently across libc versions. */
+static int uperf_sched_getattr(pid_t pid, struct sched_attr *attr,
+                               unsigned int size, unsigned int flags) {
+#ifdef SYS_sched_getattr
+    return (int)syscall(SYS_sched_getattr, pid, attr, size, flags);
+#else
+    (void)pid;
+    (void)attr;
+    (void)size;
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+static int uperf_sched_setattr(pid_t pid, struct sched_attr *attr,
+                               unsigned int flags) {
+#ifdef SYS_sched_setattr
+    return (int)syscall(SYS_sched_setattr, pid, attr, flags);
+#else
+    (void)pid;
+    (void)attr;
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 static bool find_own_cgroup(char *path, size_t size) {
     FILE *fp = fopen("/proc/self/cgroup", "r");
@@ -255,7 +287,7 @@ int cgroup_manager_set_pid_uclamp(pid_t pid, int uclamp_min, int uclamp_max) {
     struct sched_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.size = sizeof(attr);
-    if (sched_getattr(pid, &attr, sizeof(attr), 0) < 0) {
+    if (uperf_sched_getattr(pid, &attr, sizeof(attr), 0) < 0) {
         log_error("sched_getattr(%d) failed: %s", pid, strerror(errno));
         return -1;
     }
@@ -263,7 +295,7 @@ int cgroup_manager_set_pid_uclamp(pid_t pid, int uclamp_min, int uclamp_max) {
                         SCHED_FLAG_UTIL_CLAMP_MAX;
     attr.sched_util_min = (uint32_t)uclamp_min;
     attr.sched_util_max = (uint32_t)uclamp_max;
-    if (sched_setattr(pid, &attr, 0) < 0) {
+    if (uperf_sched_setattr(pid, &attr, 0) < 0) {
         log_error("sched_setattr(%d, uclamp=[%d,%d]) failed: %s",
                   pid, uclamp_min, uclamp_max, strerror(errno));
         return -1;
