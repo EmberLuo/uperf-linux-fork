@@ -35,6 +35,59 @@ static GVariant *call_and_dispatch(GDBusConnection *connection,
     return call.result;
 }
 
+static GError *call_and_expect_error(GDBusConnection *connection,
+                                     const gchar *method_name,
+                                     GVariant *parameters,
+                                     const GVariantType *reply_type) {
+    AsyncCall call = {0};
+    g_dbus_connection_call(
+        connection, "org.uperflinux.Daemon", "/org/uperflinux/Daemon",
+        "org.uperflinux.Daemon", method_name, parameters, reply_type,
+        G_DBUS_CALL_FLAGS_NONE, 5000, NULL, async_call_done, &call);
+    while (!call.done)
+        g_main_context_iteration(NULL, TRUE);
+    assert(call.result == NULL);
+    assert(call.error != NULL);
+    return call.error;
+}
+
+typedef struct {
+    const char *expected_sender;
+    int control_count;
+    int admin_count;
+    gboolean deny_control;
+    gboolean deny_admin;
+} AuthorizationState;
+
+static gboolean authorize_call(const char *sender, const char *action_id,
+                               gboolean allow_user_interaction,
+                               GError **error, void *user_data) {
+    AuthorizationState *state = user_data;
+    assert(state->expected_sender != NULL);
+    assert(strcmp(sender, state->expected_sender) == 0);
+    assert(allow_user_interaction);
+
+    if (strcmp(action_id, DBUS_ACTION_CONTROL) == 0) {
+        state->control_count++;
+        if (state->deny_control) {
+            g_set_error_literal(error, G_DBUS_ERROR,
+                                G_DBUS_ERROR_ACCESS_DENIED,
+                                "control denied by test");
+            return FALSE;
+        }
+    } else {
+        assert(strcmp(action_id, DBUS_ACTION_ADMIN) == 0);
+        state->admin_count++;
+        if (state->deny_admin) {
+            g_set_error_literal(error, G_DBUS_ERROR,
+                                G_DBUS_ERROR_ACCESS_DENIED,
+                                "admin denied by test");
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 static int mode_callback_count;
 static int mode_signal_count;
 static int reload_callback_count;
@@ -94,6 +147,11 @@ int main(void) {
             G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION,
         NULL, NULL, &error);
     assert(error == NULL && client != NULL);
+    AuthorizationState authorization = {
+        .expected_sender = g_dbus_connection_get_unique_name(client),
+    };
+    dbus_manager_set_authorize_handler(manager, authorize_call,
+                                       &authorization);
     guint mode_subscription = g_dbus_connection_signal_subscribe(
         client, "org.uperflinux.Daemon", "org.uperflinux.Daemon",
         "ModeChanged", "/org/uperflinux/Daemon", NULL,
@@ -130,6 +188,8 @@ int main(void) {
     g_variant_unref(game_property);
     g_variant_unref(properties);
     g_variant_unref(reply);
+    assert(authorization.control_count == 0);
+    assert(authorization.admin_count == 0);
     gboolean success = FALSE;
 
     reply = call_and_dispatch(
@@ -137,6 +197,7 @@ int main(void) {
         G_VARIANT_TYPE("(b)"));
     g_variant_get(reply, "(b)", &success);
     assert(success && reload_callback_count == 1);
+    assert(authorization.admin_count == 1);
     g_variant_unref(reply);
 
     reply = call_and_dispatch(
@@ -145,6 +206,7 @@ int main(void) {
     g_variant_get(reply, "(b)", &success);
     assert(success && mode_callback_count == 1);
     assert(strcmp(dbus_manager_get_mode(manager), "performance") == 0);
+    assert(authorization.control_count == 1);
     g_variant_unref(reply);
     for (int i = 0; i < 100 && mode_signal_count == 0; i++) {
         while (g_main_context_iteration(NULL, FALSE)) {}
@@ -158,6 +220,17 @@ int main(void) {
     g_variant_get(reply, "(b)", &success);
     assert(success && active_pid_callback_count == 1);
     assert(dbus_manager_get_active_pid(manager) == 4242);
+    assert(authorization.control_count == 2);
+    g_variant_unref(reply);
+
+    reply = call_and_dispatch(
+        client, "org.uperflinux.Daemon", "SetGameMode",
+        g_variant_new("(iss)", 1000, "game-0", "performance"),
+        G_VARIANT_TYPE("(b)"));
+    g_variant_get(reply, "(b)", &success);
+    assert(success);
+    assert(strcmp(games[0].mode, "performance") == 0);
+    assert(authorization.control_count == 3);
     g_variant_unref(reply);
 
     reply = call_and_dispatch(
@@ -176,6 +249,7 @@ int main(void) {
         g_variant_new("(s)", "invalid"), G_VARIANT_TYPE("(b)"));
     g_variant_get(reply, "(b)", &success);
     assert(!success && mode_callback_count == 1);
+    assert(authorization.control_count == 4);
     g_variant_unref(reply);
 
     strcpy(names[39], "changed");
@@ -201,7 +275,28 @@ int main(void) {
     g_variant_get(reply, "(b)", &success);
     assert(success);
     assert(dbus_manager_get_manual_freq(manager, 0) == 2956800000LL);
+    assert(authorization.admin_count == 2);
     g_variant_unref(reply);
+
+    authorization.deny_admin = TRUE;
+    error = call_and_expect_error(
+        client, "SetManualFreq",
+        g_variant_new("(ix)", 0, (gint64)2000000000LL),
+        G_VARIANT_TYPE("(b)"));
+    assert(g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED));
+    g_clear_error(&error);
+    assert(authorization.admin_count == 3);
+    assert(dbus_manager_get_manual_freq(manager, 0) == 2956800000LL);
+
+    authorization.deny_control = TRUE;
+    error = call_and_expect_error(
+        client, "SetMode", g_variant_new("(s)", "performance"),
+        G_VARIANT_TYPE("(b)"));
+    assert(g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED));
+    g_clear_error(&error);
+    assert(authorization.control_count == 5);
+    assert(mode_callback_count == 1);
+    assert(strcmp(dbus_manager_get_mode(manager), "performance") == 0);
 
     g_dbus_connection_signal_unsubscribe(client, mode_subscription);
     g_object_unref(client);
