@@ -4,13 +4,17 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <gio/gio.h>
+#include <polkit/polkit.h>
 
 /* ----------------------------------------------------------------
  * DbusManager internal state
  * ---------------------------------------------------------------- */
 
 struct DbusManager {
+    gint              ref_count;
+    gboolean          shutting_down;
     GBusType          bus_type;
     guint             owner_id;
     guint             export_id;
@@ -51,6 +55,13 @@ struct DbusManager {
     DbusSetActivePidFunc set_active_pid_cb;
     void               *set_active_pid_ud;
 
+    /* Authorization. Production system-bus calls use Polkit asynchronously;
+     * tests may inject a deterministic callback. */
+    PolkitAuthority    *polkit_authority;
+    GCancellable       *authorization_cancel;
+    DbusAuthorizeFunc   authorize_cb;
+    void               *authorize_ud;
+
     /* Manual frequency overrides */
     gint64             manual_freq[5];
     gboolean           manual_active;
@@ -66,6 +77,15 @@ struct DbusManager {
     int                nr_workloads;
     int                workloads_cap;
 };
+
+typedef struct {
+    DbusManager          *manager;
+    char                 *sender;
+    char                 *action_id;
+    char                 *method_name;
+    GVariant             *parameters;
+    GDBusMethodInvocation *invocation;
+} PendingAuthorization;
 
 /* DBus XML interface — embedded directly to avoid codegen step */
 static const gchar introspection_xml[] =
@@ -174,22 +194,36 @@ static void game_process_entry_clear(GameProcessEntry *entry) {
     entry->pid = 0;
 }
 
-/* Handle SetMode method call */
-static void handle_set_mode(GDBusConnection      *connection,
-                            const gchar          *sender,
-                            const gchar          *object_path,
-                            const gchar          *interface_name,
-                            const gchar          *method_name,
-                            GVariant             *parameters,
-                            GDBusMethodInvocation *invocation,
-                            gpointer              user_data) {
-    (void)connection;
-    (void)sender;
-    (void)object_path;
-    (void)interface_name;
-    (void)method_name;
+static DbusManager *dbus_manager_ref_internal(DbusManager *mgr) {
+    g_atomic_int_inc(&mgr->ref_count);
+    return mgr;
+}
 
-    DbusManager *mgr = (DbusManager *)user_data;
+static void dbus_manager_finalize(DbusManager *mgr) {
+    g_clear_object(&mgr->polkit_authority);
+    g_clear_object(&mgr->authorization_cancel);
+    g_clear_pointer(&mgr->node_info, g_dbus_node_info_unref);
+    g_clear_object(&mgr->bus_conn);
+    g_free(mgr->current_mode);
+    g_free(mgr->current_scene);
+    if (mgr->games) {
+        for (int i = 0; i < mgr->nr_games; i++)
+            game_process_entry_clear(&mgr->games[i]);
+        free(mgr->games);
+    }
+    free(mgr->workloads);
+    free(mgr);
+    log_debug("DBus manager destroyed");
+}
+
+static void dbus_manager_unref_internal(DbusManager *mgr) {
+    if (g_atomic_int_dec_and_test(&mgr->ref_count))
+        dbus_manager_finalize(mgr);
+}
+
+/* Handle SetMode after the caller has been authorized. */
+static void handle_set_mode(DbusManager *mgr, GVariant *parameters,
+                            GDBusMethodInvocation *invocation) {
     const char *mode;
 
     g_variant_get(parameters, "(&s)", &mode);
@@ -205,35 +239,103 @@ static void handle_set_mode(GDBusConnection      *connection,
         g_variant_new("(b)", success));
 }
 
-/* Handle ReloadConfig method call */
-static void handle_reload_config(GDBusConnection      *connection,
-                                 const gchar          *sender,
-                                 const gchar          *object_path,
-                                 const gchar          *interface_name,
-                                 const gchar          *method_name,
-                                 GVariant             *parameters,
-                                 GDBusMethodInvocation *invocation,
-                                 gpointer              user_data) {
-    (void)connection; (void)sender; (void)object_path;
-    (void)interface_name; (void)method_name; (void)parameters;
-
+/* Handle ReloadConfig after the caller has been authorized. */
+static void handle_reload_config(DbusManager *mgr,
+                                 GDBusMethodInvocation *invocation) {
     log_info("DBus ReloadConfig called");
-    DbusManager *mgr = user_data;
     gboolean success = mgr->reload_config_cb &&
         mgr->reload_config_cb(mgr->reload_config_ud);
     g_dbus_method_invocation_return_value(invocation,
         g_variant_new("(b)", success));
 }
 
-/* Method dispatcher used by the exported GDBus object. */
-static void handle_method_call(GDBusConnection      *connection,
-                               const gchar          *sender,
-                               const gchar          *object_path,
-                               const gchar          *interface_name,
-                               const gchar          *method_name,
-                               GVariant             *parameters,
-                               GDBusMethodInvocation *invocation,
-                               gpointer              user_data) {
+static const char *authorization_action_for_method(const char *method_name) {
+    if (strcmp(method_name, "SetMode") == 0 ||
+        strcmp(method_name, "SetGameMode") == 0 ||
+        strcmp(method_name, "SetActiveProcess") == 0)
+        return DBUS_ACTION_CONTROL;
+    if (strcmp(method_name, "SetManualFreq") == 0 ||
+        strcmp(method_name, "ReloadConfig") == 0)
+        return DBUS_ACTION_ADMIN;
+    return NULL;
+}
+
+static void return_access_denied(GDBusMethodInvocation *invocation,
+                                 const char *method_name) {
+    g_dbus_method_invocation_return_error(
+        invocation, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED,
+        "Not authorized to call %s", method_name);
+}
+
+static gboolean get_sender_uid(DbusManager *mgr, const char *sender,
+                               uid_t *uid) {
+    if (!mgr || !mgr->bus_conn || !sender || !uid) return FALSE;
+
+    GError *error = NULL;
+    GVariant *reply = g_dbus_connection_call_sync(
+        mgr->bus_conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "GetConnectionUnixUser",
+        g_variant_new("(s)", sender), G_VARIANT_TYPE("(u)"),
+        G_DBUS_CALL_FLAGS_NONE, 2000, NULL, &error);
+    if (!reply) {
+        log_warn("DBus: cannot resolve caller %s: %s", sender,
+                 error ? error->message : "unknown error");
+        g_clear_error(&error);
+        return FALSE;
+    }
+
+    guint32 raw_uid = 0;
+    g_variant_get(reply, "(u)", &raw_uid);
+    g_variant_unref(reply);
+    *uid = (uid_t)raw_uid;
+    return TRUE;
+}
+
+/* PID-targeting operations stay passwordless for the active desktop user,
+ * but the root daemon must not let that user retarget another user's tasks. */
+static gboolean caller_may_target_pid(DbusManager *mgr, const char *sender,
+                                      const char *method_name,
+                                      GVariant *parameters,
+                                      GDBusMethodInvocation *invocation) {
+    if (mgr->bus_type != G_BUS_TYPE_SYSTEM ||
+        (strcmp(method_name, "SetGameMode") != 0 &&
+         strcmp(method_name, "SetActiveProcess") != 0))
+        return TRUE;
+
+    gint32 pid = 0;
+    g_variant_get_child(parameters, 0, "i", &pid);
+    if (pid <= 0) return TRUE;
+
+    uid_t caller_uid = 0;
+    if (!get_sender_uid(mgr, sender, &caller_uid)) {
+        return_access_denied(invocation, method_name);
+        return FALSE;
+    }
+    if (caller_uid == 0) return TRUE;
+
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
+    struct stat process_stat;
+    if (stat(proc_path, &process_stat) != 0 ||
+        process_stat.st_uid != caller_uid) {
+        log_warn("DBus %s denied: caller uid %u does not own pid %d",
+                 method_name, (unsigned int)caller_uid, pid);
+        return_access_denied(invocation, method_name);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* Dispatch a state-changing method only after authorization succeeds. */
+static void dispatch_authorized_method(DbusManager *mgr,
+                                       const char *sender,
+                                       const char *method_name,
+                                       GVariant *parameters,
+                                       GDBusMethodInvocation *invocation) {
+    if (!caller_may_target_pid(mgr, sender, method_name, parameters,
+                               invocation))
+        return;
+
     if (strcmp(method_name, "SetMode") == 0) {
         const char *mode = NULL;
         g_variant_get(parameters, "(&s)", &mode);
@@ -243,15 +345,12 @@ static void handle_method_call(GDBusConnection      *connection,
                 invocation, g_variant_new("(b)", FALSE));
             return;
         }
-        handle_set_mode(connection, sender, object_path, interface_name,
-                        method_name, parameters, invocation, user_data);
+        handle_set_mode(mgr, parameters, invocation);
         return;
     } else if (strcmp(method_name, "ReloadConfig") == 0) {
-        handle_reload_config(connection, sender, object_path, interface_name,
-                             method_name, parameters, invocation, user_data);
+        handle_reload_config(mgr, invocation);
         return;
     } else if (strcmp(method_name, "SetGameMode") == 0) {
-        DbusManager *mgr = (DbusManager *)user_data;
         int pid_in;
         const char *app_in, *mode_in;
         g_variant_get(parameters, "(i&s&s)", &pid_in, &app_in, &mode_in);
@@ -277,7 +376,6 @@ static void handle_method_call(GDBusConnection      *connection,
             g_variant_new("(b)", TRUE));
         return;
     } else if (strcmp(method_name, "SetManualFreq") == 0) {
-        DbusManager *mgr = (DbusManager *)user_data;
         int cluster_in;
         gint64 freq_in;
         g_variant_get(parameters, "(ix)", &cluster_in, &freq_in);
@@ -289,7 +387,6 @@ static void handle_method_call(GDBusConnection      *connection,
             g_variant_new("(b)", ok));
         return;
     } else if (strcmp(method_name, "SetActiveProcess") == 0) {
-        DbusManager *mgr = (DbusManager *)user_data;
         int pid_in = 0;
         g_variant_get(parameters, "(i)", &pid_in);
         gboolean ok = pid_in >= 0 && mgr->set_active_pid_cb &&
@@ -302,6 +399,122 @@ static void handle_method_call(GDBusConnection      *connection,
     g_dbus_method_invocation_return_error(
         invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
         "Unknown method %s", method_name);
+}
+
+static void pending_authorization_free(PendingAuthorization *pending) {
+    DbusManager *mgr = pending->manager;
+    g_clear_object(&pending->invocation);
+    g_clear_pointer(&pending->parameters, g_variant_unref);
+    g_free(pending->method_name);
+    g_free(pending->action_id);
+    g_free(pending->sender);
+    g_free(pending);
+    dbus_manager_unref_internal(mgr);
+}
+
+static void authorization_check_done(GObject *source_object,
+                                     GAsyncResult *result,
+                                     gpointer user_data) {
+    PendingAuthorization *pending = user_data;
+    DbusManager *mgr = pending->manager;
+    GError *error = NULL;
+    PolkitAuthorizationResult *authorization =
+        polkit_authority_check_authorization_finish(
+            POLKIT_AUTHORITY(source_object), result, &error);
+
+    if (mgr->shutting_down) {
+        g_dbus_method_invocation_return_error_literal(
+            pending->invocation, G_IO_ERROR, G_IO_ERROR_CANCELLED,
+            "uperf-linux is shutting down");
+    } else if (authorization &&
+               polkit_authorization_result_get_is_authorized(authorization)) {
+        dispatch_authorized_method(mgr, pending->sender, pending->method_name,
+                                   pending->parameters, pending->invocation);
+    } else {
+        if (error) {
+            log_warn("DBus authorization failed for %s (%s, sender %s): %s",
+                     pending->method_name, pending->action_id, pending->sender,
+                     error->message);
+        } else {
+            log_warn("DBus authorization denied for %s (%s, sender %s)",
+                     pending->method_name, pending->action_id, pending->sender);
+        }
+        return_access_denied(pending->invocation, pending->method_name);
+    }
+
+    g_clear_error(&error);
+    g_clear_object(&authorization);
+    pending_authorization_free(pending);
+}
+
+/* Method dispatcher used by the exported GDBus object. */
+static void handle_method_call(GDBusConnection      *connection,
+                               const gchar          *sender,
+                               const gchar          *object_path,
+                               const gchar          *interface_name,
+                               const gchar          *method_name,
+                               GVariant             *parameters,
+                               GDBusMethodInvocation *invocation,
+                               gpointer              user_data) {
+    (void)connection;
+    (void)object_path;
+    (void)interface_name;
+    DbusManager *mgr = user_data;
+    const char *action_id = authorization_action_for_method(method_name);
+
+    if (!action_id) {
+        g_dbus_method_invocation_return_error(
+            invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
+            "Unknown method %s", method_name);
+        return;
+    }
+
+    if (mgr->authorize_cb) {
+        GError *error = NULL;
+        gboolean authorized = mgr->authorize_cb(
+            sender, action_id, TRUE, &error, mgr->authorize_ud);
+        if (!authorized) {
+            log_warn("DBus authorization hook denied %s (%s): %s",
+                     method_name, action_id,
+                     error ? error->message : "not authorized");
+            g_clear_error(&error);
+            return_access_denied(invocation, method_name);
+            return;
+        }
+        g_clear_error(&error);
+        dispatch_authorized_method(mgr, sender, method_name, parameters,
+                                   invocation);
+        return;
+    }
+
+    /* Polkit's system-bus-name subject is meaningful only on the system bus.
+     * Session-bus managers are used by the isolated unit-test backend. */
+    if (mgr->bus_type != G_BUS_TYPE_SYSTEM) {
+        dispatch_authorized_method(mgr, sender, method_name, parameters,
+                                   invocation);
+        return;
+    }
+
+    if (!mgr->polkit_authority || !sender || sender[0] != ':') {
+        log_warn("DBus authorization unavailable for %s", method_name);
+        return_access_denied(invocation, method_name);
+        return;
+    }
+
+    PendingAuthorization *pending = g_new0(PendingAuthorization, 1);
+    pending->manager = dbus_manager_ref_internal(mgr);
+    pending->sender = g_strdup(sender);
+    pending->action_id = g_strdup(action_id);
+    pending->method_name = g_strdup(method_name);
+    pending->parameters = g_variant_ref(parameters);
+    pending->invocation = g_object_ref(invocation);
+
+    PolkitSubject *subject = polkit_system_bus_name_new(sender);
+    polkit_authority_check_authorization(
+        mgr->polkit_authority, subject, action_id, NULL,
+        POLKIT_CHECK_AUTHORIZATION_FLAGS_ALLOW_USER_INTERACTION,
+        mgr->authorization_cancel, authorization_check_done, pending);
+    g_object_unref(subject);
 }
 
 /* ----------------------------------------------------------------
@@ -456,6 +669,7 @@ DbusManager *dbus_manager_new(GType bus_type) {
     DbusManager *mgr = calloc(1, sizeof(*mgr));
     if (!mgr) return NULL;
 
+    mgr->ref_count = 1;
     mgr->bus_type = bus_type;
     mgr->current_mode = g_strdup("balance");
     mgr->current_scene = g_strdup("idle");
@@ -480,10 +694,23 @@ DbusManager *dbus_manager_new(GType bus_type) {
     GError *err = NULL;
     mgr->bus_conn = g_bus_get_sync(bus_type, NULL, &err);
     if (!mgr->bus_conn) {
-        log_error("DBus: failed to connect to bus: %s", err->message);
-        g_error_free(err);
+        log_error("DBus: failed to connect to bus: %s",
+                  err ? err->message : "unknown error");
+        g_clear_error(&err);
         dbus_manager_free(mgr);
         return NULL;
+    }
+
+    if (bus_type == G_BUS_TYPE_SYSTEM) {
+        mgr->authorization_cancel = g_cancellable_new();
+        mgr->polkit_authority = polkit_authority_get_sync(
+            mgr->authorization_cancel, &err);
+        if (!mgr->polkit_authority) {
+            log_error("DBus: Polkit authority is unavailable; control methods "
+                      "will be denied: %s",
+                      err ? err->message : "unknown error");
+            g_clear_error(&err);
+        }
     }
 
     mgr->node_info = g_dbus_node_info_new_for_xml(introspection_xml, &err);
@@ -535,7 +762,10 @@ DbusManager *dbus_manager_new(GType bus_type) {
 }
 
 void dbus_manager_free(DbusManager *mgr) {
-    if (!mgr) return;
+    if (!mgr || mgr->shutting_down) return;
+    mgr->shutting_down = TRUE;
+    if (mgr->authorization_cancel)
+        g_cancellable_cancel(mgr->authorization_cancel);
     if (mgr->stats_timer) {
         g_source_remove(mgr->stats_timer);
         mgr->stats_timer = 0;
@@ -552,20 +782,11 @@ void dbus_manager_free(DbusManager *mgr) {
     }
     if (mgr->bus_conn && mgr->export_id)
         g_dbus_connection_unregister_object(mgr->bus_conn, mgr->export_id);
+    mgr->export_id = 0;
+    mgr->owner_id = 0;
     g_clear_pointer(&mgr->node_info, g_dbus_node_info_unref);
-    if (mgr->bus_conn) {
-        g_object_unref(mgr->bus_conn);
-    }
-    g_free(mgr->current_mode);
-    g_free(mgr->current_scene);
-    if (mgr->games) {
-        for (int i = 0; i < mgr->nr_games; i++)
-            game_process_entry_clear(&mgr->games[i]);
-        free(mgr->games);
-    }
-    free(mgr->workloads);
-    free(mgr);
-    log_debug("DBus manager destroyed");
+    g_clear_object(&mgr->bus_conn);
+    dbus_manager_unref_internal(mgr);
 }
 
 void dbus_manager_set_mode(DbusManager *mgr, const char *mode) {
@@ -711,6 +932,14 @@ gboolean dbus_manager_emit_stats(DbusManager *mgr,
     dbus_manager_update_frequencies(mgr, freqs, nr_clusters);
     dbus_manager_update_loads(mgr, loads, nr_cpus);
     return TRUE;
+}
+
+void dbus_manager_set_authorize_handler(DbusManager *mgr,
+                                        DbusAuthorizeFunc callback,
+                                        void *user_data) {
+    if (!mgr) return;
+    mgr->authorize_cb = callback;
+    mgr->authorize_ud = user_data;
 }
 
 void dbus_manager_set_mode_handler(DbusManager *mgr,

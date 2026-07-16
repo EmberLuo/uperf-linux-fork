@@ -9,6 +9,10 @@
 #define DBUS_MAX_CLUSTERS  8
 #define DBUS_MAX_CPUS      16
 
+/* Polkit actions used to authorize state-changing D-Bus methods. */
+#define DBUS_ACTION_CONTROL "org.uperflinux.control"
+#define DBUS_ACTION_ADMIN   "org.uperflinux.admin"
+
 /* Opaque DBus manager handle */
 typedef struct DbusManager DbusManager;
 
@@ -19,6 +23,21 @@ DbusManager *dbus_manager_new(GType bus_type);
 
 /* Free DBus manager and unregister from bus. */
 void dbus_manager_free(DbusManager *mgr);
+
+/* Override the default Polkit authorization check. This is primarily useful
+ * for tests and embedded session-bus users. A NULL callback restores the
+ * default behavior (Polkit on the system bus, allow on a session bus).
+ *
+ * The callback runs before a method is dispatched. Returning FALSE rejects
+ * the call with org.freedesktop.DBus.Error.AccessDenied. */
+typedef gboolean (*DbusAuthorizeFunc)(const char *sender,
+                                      const char *action_id,
+                                      gboolean allow_user_interaction,
+                                      GError **error,
+                                      void *user_data);
+void dbus_manager_set_authorize_handler(DbusManager *mgr,
+                                        DbusAuthorizeFunc callback,
+                                        void *user_data);
 
 /* Update current power mode. Triggers ModeChanged signal.
  * mode: "balance", "powersave", or "performance" */

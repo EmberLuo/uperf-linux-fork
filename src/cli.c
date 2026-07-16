@@ -11,6 +11,7 @@
 #define DAEMON_BUS   "org.uperflinux.Daemon"
 #define DAEMON_PATH  "/org/uperflinux/Daemon"
 #define DAEMON_IFACE "org.uperflinux.Daemon"
+#define CONTROL_CALL_TIMEOUT_MS 120000
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
@@ -48,7 +49,8 @@ static GVariant *daemon_call(GDBusConnection *connection,
     GError *error = NULL;
     GVariant *reply = g_dbus_connection_call_sync(
         connection, DAEMON_BUS, DAEMON_PATH, DAEMON_IFACE, method,
-        parameters, reply_type, G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
+        parameters, reply_type, G_DBUS_CALL_FLAGS_NONE,
+        CONTROL_CALL_TIMEOUT_MS, NULL, &error);
     if (!reply) {
         fprintf(stderr, "Daemon call %s failed: %s\n", method,
                 error ? error->message : "unknown error");

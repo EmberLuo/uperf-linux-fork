@@ -31,14 +31,18 @@ jobs:
           install -y --no-install-recommends \
           gcc g++ cmake pkg-config make file \
           libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
+          libpolkit-gobject-1-dev \
           libgtk-4-dev libadwaita-1-dev dpkg-dev
 
     - name: Build
       run: |
         cmake -S . -B build-arm64 \
-          -DBUILD_TESTS=OFF \
+          -DBUILD_TESTS=ON \
           -DCMAKE_BUILD_TYPE=Release
         cmake --build build-arm64 --parallel "$(nproc)"
+
+    - name: Test
+      run: ctest --test-dir build-arm64 --output-on-failure --parallel "$(nproc)"
 
     - name: Build DEB package
       working-directory: build-arm64

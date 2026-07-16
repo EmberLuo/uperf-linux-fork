@@ -7,6 +7,7 @@
 #define DAEMON_BUS    "org.uperflinux.Daemon"
 #define DAEMON_PATH   "/org/uperflinux/Daemon"
 #define DAEMON_IFACE  "org.uperflinux.Daemon"
+#define PRIVILEGED_CALL_TIMEOUT_MS 120000
 
 G_DEFINE_TYPE(DbusProxy, uperf_dbus_proxy, G_TYPE_OBJECT)
 
@@ -278,7 +279,7 @@ gboolean dbus_proxy_reload_config(DbusProxy *self) {
     GDBusProxy *proxy = get_proxy(self, &err);
     if (!proxy) { g_clear_error(&err); return FALSE; }
     GVariant *ret = g_dbus_proxy_call_sync(proxy, "ReloadConfig", NULL,
-        G_DBUS_CALL_FLAGS_NONE, -1, NULL, &err);
+        G_DBUS_CALL_FLAGS_NONE, PRIVILEGED_CALL_TIMEOUT_MS, NULL, &err);
     g_object_unref(proxy);
     if (!ret) {
         g_warning("ReloadConfig: %s", err ? err->message : "request failed");
@@ -304,7 +305,7 @@ gboolean dbus_proxy_apply_freq_override(DbusProxy *self,
         GVariant *ret = g_dbus_proxy_call_sync(
             proxy, "SetManualFreq",
             g_variant_new("(ix)", clusters[i], frequencies[i]),
-            G_DBUS_CALL_FLAGS_NONE, -1, NULL, &err);
+            G_DBUS_CALL_FLAGS_NONE, PRIVILEGED_CALL_TIMEOUT_MS, NULL, &err);
         gboolean accepted = FALSE;
         if (ret) {
             g_variant_get(ret, "(b)", &accepted);
@@ -320,7 +321,8 @@ gboolean dbus_proxy_apply_freq_override(DbusProxy *self,
                 GVariant *released = g_dbus_proxy_call_sync(
                     proxy, "SetManualFreq",
                     g_variant_new("(ix)", clusters[rollback], (gint64)0),
-                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+                    G_DBUS_CALL_FLAGS_NONE, PRIVILEGED_CALL_TIMEOUT_MS,
+                    NULL, NULL);
                 if (released) g_variant_unref(released);
             }
             g_clear_error(&err);

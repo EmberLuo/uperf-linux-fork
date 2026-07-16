@@ -25,6 +25,7 @@ option(BUILD_TESTS "Build tests" ON)
 # Find dependencies
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
+pkg_check_modules(POLKIT REQUIRED IMPORTED_TARGET polkit-gobject-1)
 
 # GLib for DBus integration (daemon side)
 find_package(PkgConfig REQUIRED)
@@ -86,6 +87,7 @@ target_include_directories(uperf-linux PRIVATE
 
 target_link_libraries(uperf-linux PRIVATE m gio-2.0 dbus-1 gobject-2.0
     PkgConfig::JSONC
+    PkgConfig::POLKIT
     ${GLIB2_LIBRARIES}
     pthread
     rt
@@ -233,7 +235,7 @@ if(BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_dbus_interface PRIVATE
-        gio-2.0 gobject-2.0 ${GLIB2_LIBRARIES} pthread
+        gio-2.0 gobject-2.0 ${GLIB2_LIBRARIES} PkgConfig::POLKIT pthread
     )
 
     add_executable(test_config_file
@@ -315,6 +317,9 @@ install(FILES systemd/uperf-linux.service DESTINATION lib/systemd/system)
 install(FILES config/org.uperflinux.Daemon.conf
     DESTINATION share/dbus-1/system.d
 )
+install(FILES config/org.uperflinux.policy
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/polkit-1/actions
+)
 
 # ---- Deb packaging ----
 set(CPACK_PACKAGE_NAME "uperf-linux")
@@ -326,11 +331,11 @@ set(CPACK_PACKAGE_FILE_NAME "uperf-linux-${CPACK_PACKAGE_VERSION}-arm64")
 set(CPACK_GENERATOR "DEB")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
 set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglib2.0-0 (>= 2.0), libdbus-1-3 (>= 1.0), libjson-c5 (>= 0.12), libsystemd0 (>= 209), libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.2)")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglib2.0-0 (>= 2.0), libdbus-1-3 (>= 1.0), libjson-c5 (>= 0.12), libsystemd0 (>= 209), libpolkit-gobject-1-0 (>= 0.105), polkitd, libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.2)")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles"
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/prerm;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles"
 )
 set(CPACK_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
     OWNER_READ OWNER_WRITE OWNER_EXECUTE
