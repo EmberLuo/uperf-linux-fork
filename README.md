@@ -245,11 +245,6 @@ tools/validate-frequency-hardware.sh
 Run write-readback validation only on hardware where temporary CPU/GPU frequency
 limit changes are acceptable.
 
-## Design Contracts
-
-Intentional behavior that a rewrite should preserve is documented in
-[docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md).
-
 ## License
 
 This project is licensed under GPL-3.0-or-later. See [LICENSE](LICENSE).

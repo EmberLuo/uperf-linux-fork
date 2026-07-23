@@ -208,9 +208,6 @@ tools/validate-frequency-hardware.sh
 
 写入读回验证会临时改变 CPU/GPU 频率上下限，只应在你确认硬件状态允许时运行。
 
-## 设计契约
-
-需要在后续重构中保留的行为记录在 [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md)。
 
 ## 许可证
 
