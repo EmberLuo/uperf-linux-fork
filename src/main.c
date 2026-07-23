@@ -8,12 +8,15 @@
 #include "power_model.h"
 #include "frequency_controller.h"
 #include "frequency_state.h"
+#include "frequency_recovery.h"
 #include "game_scanner.h"
 #include "task_scheduler.h"
 #include "cgroup_manager.h"
 #include "thermal.h"
 #include "dbus_interface.h"
 #include "perapp_config.h"
+#include "mode_selector.h"
+#include "runtime_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +56,7 @@ typedef struct {
     gint64 hardware_max_hz;
     gint64 unit_hz;
     uint64_t cpu_mask;
+    OppTable opp;              /* Real achievable OPPs (Hz); count 0 = none. */
     bool manual_active;
     bool modified;
     bool automatic_disabled;
@@ -64,13 +68,30 @@ static ManualFreqTarget g_manual_gpu;
 static int g_nr_cpu_targets;
 static bool g_automatic_frequency_enabled;
 static PowerMode g_requested_mode = MODE_BALANCE;
-static PowerMode g_last_detected_app_mode = MODE_NUM;
 static GameProcess g_game_results[MAX_GAMES];
 static int g_nr_game_results;
+
+static void recompute_effective_mode(const char *source);
 
 #define FREQUENCY_STATE_FILE "/run/uperf-linux/frequency-state"
 #define SCHEDULER_STATE_FILE "/run/uperf-linux/scheduler-state"
 #define CGROUP_STATE_FILE "/run/uperf-linux/cgroup-state"
+
+static char g_frequency_state_path[MAX_PATH_LEN] = FREQUENCY_STATE_FILE;
+static char g_scheduler_state_path[MAX_PATH_LEN] = SCHEDULER_STATE_FILE;
+static char g_cgroup_state_path[MAX_PATH_LEN] = CGROUP_STATE_FILE;
+
+#ifdef UPERF_TEST_RUNTIME
+static bool g_test_runtime_enabled;
+static bool g_test_recovery_only;
+#endif
+
+static bool frequency_writes_allowed(void) {
+#ifdef UPERF_TEST_RUNTIME
+    if (g_test_runtime_enabled) return true;
+#endif
+    return geteuid() == 0;
+}
 
 static gint64 parse_sysfs_number(const char *value) {
     if (!value) return -1;
@@ -132,6 +153,32 @@ static bool parse_frequency_range(const char *value, gint64 *minimum,
     *minimum = low;
     *maximum = high;
     return true;
+}
+
+/* Parse a whitespace-separated "scaling_available_frequencies" list (kHz) into
+ * an OppTable of Hz points.  Ignores duplicates and overflow entries; leaves
+ * opp->count at 0 if nothing valid was found (caller falls back to kernel-side
+ * rounding). */
+static void parse_opp_table(const char *value, gint64 unit_hz, OppTable *opp) {
+    if (!opp) return;
+    opp->count = 0;
+    if (!value || unit_hz <= 0) return;
+    const char *cursor = value;
+    while (*cursor && opp->count < MAX_OPP_POINTS) {
+        while (g_ascii_isspace(*cursor)) cursor++;
+        if (!*cursor) break;
+        char *end = NULL;
+        errno = 0;
+        gint64 khz = g_ascii_strtoll(cursor, &end, 10);
+        if (errno != 0 || end == cursor) break;
+        cursor = end;
+        if (khz <= 0 || khz > G_MAXINT64 / unit_hz) continue;
+        gint64 hz = khz * unit_hz;
+        bool dup = false;
+        for (int i = 0; i < opp->count; i++)
+            if (opp->freq_hz[i] == hz) { dup = true; break; }
+        if (!dup) opp->freq_hz[opp->count++] = hz;
+    }
 }
 
 static int cpu_mask_count(uint64_t mask) {
@@ -203,13 +250,14 @@ static void target_to_state_entry(const ManualFreqTarget *target,
              target->original_max);
 }
 
-static bool prepare_frequency_state(void) {
-    if (geteuid() != 0) return true;
+static bool prepare_frequency_state(bool recovery_ready) {
+    if (!frequency_writes_allowed()) return true;
+    if (!recovery_ready) return false;
 
     FrequencyStateEntry saved[FREQUENCY_STATE_MAX_ENTRIES] = {0};
     size_t saved_count = 0;
     int load_result = frequency_state_load(
-        FREQUENCY_STATE_FILE, saved, FREQUENCY_STATE_MAX_ENTRIES,
+        g_frequency_state_path, saved, FREQUENCY_STATE_MAX_ENTRIES,
         &saved_count);
     if (load_result == FREQUENCY_STATE_ERROR) {
         log_error("Frequency state file is invalid; automatic control disabled");
@@ -254,7 +302,7 @@ static bool prepare_frequency_state(void) {
     FrequencyStateEntry current[FREQUENCY_STATE_MAX_ENTRIES] = {0};
     for (size_t i = 0; i < target_count; i++)
         target_to_state_entry(targets[i], &current[i]);
-    if (frequency_state_save(FREQUENCY_STATE_FILE, current, target_count) !=
+    if (frequency_state_save(g_frequency_state_path, current, target_count) !=
         FREQUENCY_STATE_OK) {
         log_error("Cannot persist original frequency limits; automatic "
                   "control disabled");
@@ -263,14 +311,14 @@ static bool prepare_frequency_state(void) {
     return true;
 }
 
-static void discover_manual_frequency_targets(void) {
+static void discover_manual_frequency_targets(bool recovery_ready) {
     memset(g_manual_cpu, 0, sizeof(g_manual_cpu));
     memset(&g_manual_gpu, 0, sizeof(g_manual_gpu));
     g_nr_cpu_targets = 0;
     g_automatic_frequency_enabled = false;
     ManualFreqTarget candidates[8] = {0};
     int nr_candidates = 0;
-    DIR *dir = opendir("/sys/devices/system/cpu/cpufreq");
+    DIR *dir = runtime_backend_opendir("/sys/devices/system/cpu/cpufreq");
     if (dir) {
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL && nr_candidates < 8) {
@@ -315,6 +363,16 @@ static void discover_manual_frequency_targets(void) {
                 char *related = sysfs_reader_read(related_path);
                 candidates[nr_candidates].cpu_mask = parse_cpu_list(related);
                 free(related);
+                /* Capture the real OPP table so computed limits snap to
+                 * frequencies the policy can actually run. */
+                char opp_path[MAX_PATH_LEN];
+                snprintf(opp_path, sizeof(opp_path),
+                         "/sys/devices/system/cpu/cpufreq/policy%ld/"
+                         "scaling_available_frequencies", policy_id);
+                char *avail = sysfs_reader_read(opp_path);
+                parse_opp_table(avail, 1000,
+                                &candidates[nr_candidates].opp);
+                free(avail);
                 if (candidates[nr_candidates].cpu_mask != 0)
                     nr_candidates++;
                 else
@@ -361,21 +419,23 @@ static void discover_manual_frequency_targets(void) {
         gint64 max_hz = parse_sysfs_number(gpu_max);
         free(gpu_min);
         free(gpu_max);
+        char *available = NULL;
         char available_path[MAX_PATH_LEN];
         const char *last_slash = strrchr(gpu_min_path, '/');
         int prefix_len = last_slash ? (int)(last_slash - gpu_min_path) : -1;
         if (prefix_len > 0 && prefix_len < (int)sizeof(available_path) - 24) {
             snprintf(available_path, sizeof(available_path), "%.*s/%s",
                      prefix_len, gpu_min_path, "available_frequencies");
-            char *available = sysfs_reader_read(available_path);
+            available = sysfs_reader_read(available_path);
             parse_frequency_range(available, &min_hz, &max_hz);
-            free(available);
         }
-        initialize_manual_target(&g_manual_gpu, gpu_min_path, gpu_max_path,
-                                 NULL, min_hz, max_hz, 1);
+        if (initialize_manual_target(&g_manual_gpu, gpu_min_path, gpu_max_path,
+                                     NULL, min_hz, max_hz, 1))
+            parse_opp_table(available, 1, &g_manual_gpu.opp);
+        free(available);
     }
 
-    bool frequency_state_ready = prepare_frequency_state();
+    bool frequency_state_ready = prepare_frequency_state(recovery_ready);
 
     for (int i = 0; topology_matches && i < g_nr_cpu_targets; i++) {
         if (!g_manual_cpu[i].valid ||
@@ -384,12 +444,13 @@ static void discover_manual_frequency_targets(void) {
             g_config.cpu.power_model[i].nr_cores)
             topology_matches = false;
     }
-    g_automatic_frequency_enabled = geteuid() == 0 && g_config.cpu.enable &&
+    g_automatic_frequency_enabled = frequency_writes_allowed() &&
+        g_config.cpu.enable &&
         topology_matches && frequency_state_ready;
     if (!topology_matches)
         log_warn("Automatic frequency control disabled: detected cpufreq "
                  "topology does not match the configured power model");
-    else if (geteuid() != 0)
+    else if (!frequency_writes_allowed())
         log_info("Automatic frequency control disabled for unprivileged run");
 
     log_info("Frequency targets: CPU=%d GPU=%s automatic=%s", nr_candidates,
@@ -453,6 +514,26 @@ static gboolean write_target_limits(ManualFreqTarget *target,
         return FALSE;
     }
 
+    /* Sysfs writes can be accepted but rounded/rejected asynchronously by a
+     * driver.  A transaction is successful only when both endpoints read back
+     * as requested; otherwise restore the pre-transaction pair. */
+    char *actual_min = sysfs_reader_read(target->min_path);
+    char *actual_max = sysfs_reader_read(target->max_path);
+    gboolean verified = actual_min && actual_max &&
+        strcmp(actual_min, desired_min) == 0 &&
+        strcmp(actual_max, desired_max) == 0;
+    free(actual_min);
+    free(actual_max);
+    if (!verified) {
+        log_error("Frequency write/readback mismatch for %s / %s",
+                  target->min_path, target->max_path);
+        sysfs_writer_write_raw(g_writer, target->max_path, current_max);
+        sysfs_writer_write_raw(g_writer, target->min_path, current_min);
+        free(current_min);
+        free(current_max);
+        return FALSE;
+    }
+
     target->modified = strcmp(desired_min, target->original_min) != 0 ||
                        strcmp(desired_max, target->original_max) != 0;
     free(current_min);
@@ -487,7 +568,11 @@ static gboolean write_manual_target(ManualFreqTarget *target, gint64 freq_hz) {
                  freq_hz, target->hardware_min_hz, target->hardware_max_hz);
         return FALSE;
     }
-    gboolean result = write_target_limits(target, freq_hz, freq_hz);
+    /* Snap the requested pin to a real OPP so the reported/commanded value
+     * matches what the hardware actually runs. */
+    gint64 snapped = freq_hz;
+    frequency_controller_snap_limits(&target->opp, &snapped, &snapped);
+    gboolean result = write_target_limits(target, snapped, snapped);
     if (result) target->manual_active = true;
     return result;
 }
@@ -557,6 +642,11 @@ static void apply_automatic_frequency_control(const float *loads,
             &g_config.cpu.power_model[cluster], &params, cluster, demand,
             thermal, target->hardware_min_hz, target->hardware_max_hz,
             &minimum_hz, &maximum_hz);
+        /* Snap policy-computed limits to real OPPs so the daemon commands
+         * frequencies the hardware runs, instead of relying on the kernel to
+         * silently round arbitrary values. */
+        frequency_controller_snap_limits(&target->opp, &minimum_hz,
+                                         &maximum_hz);
         if (!write_target_limits(target, minimum_hz, maximum_hz)) {
             target->automatic_disabled = true;
             log_error("Automatic frequency control disabled for cluster %d "
@@ -571,7 +661,7 @@ static gboolean read_pid_comm(pid_t pid, char *buf, size_t len) {
     if (pid <= 0 || !buf || len == 0) return FALSE;
     char proc_path[MAX_PATH_LEN];
     snprintf(proc_path, sizeof(proc_path), "/proc/%d/comm", pid);
-    FILE *fp = fopen(proc_path, "r");
+    FILE *fp = runtime_backend_fopen(proc_path, "r");
     if (!fp) return FALSE;
     gboolean ok = fgets(buf, (int)len, fp) != NULL;
     fclose(fp);
@@ -593,15 +683,23 @@ static gboolean dbus_game_mode_handler(pid_t pid, const char *app_name,
         return FALSE;
     }
 
-    return game_scanner_set_app_mode(g_scanner,
-                                     g_config.switcher.perapp_file,
-                                     comm, mode) == 0;
+    if (game_scanner_set_app_mode(g_scanner, g_config.switcher.perapp_file,
+                                  comm, mode) != 0)
+        return FALSE;
+    /* A per-app rule change can flip the foreground override. */
+    recompute_effective_mode("per-app rule change");
+    return TRUE;
 }
 
 static gboolean dbus_active_pid_handler(pid_t pid, void *user_data) {
     (void)user_data;
-    return g_task_scheduler &&
-        task_scheduler_set_active_pid(g_task_scheduler, pid) == 0;
+    if (!g_task_scheduler ||
+        task_scheduler_set_active_pid(g_task_scheduler, pid) != 0)
+        return FALSE;
+    /* The scheduler validates and publishes the new effective identity during
+     * its next reconciliation tick.  Recomputing here would still see the old
+     * identity and can briefly apply the wrong app override. */
+    return TRUE;
 }
 
 static const char *power_mode_to_string(PowerMode mode) {
@@ -613,6 +711,8 @@ static const char *power_mode_to_string(PowerMode mode) {
     }
 }
 
+/* Low-level applier: install a concrete effective mode into the state machine.
+ * `g_requested_mode` (the user's baseline) is set separately by callers. */
 static void apply_power_mode(PowerMode mode, const char *source) {
     if (mode == MODE_FAST) mode = MODE_PERFORMANCE;
     if (!g_sm || mode < 0 || mode >= MODE_NUM) return;
@@ -623,7 +723,50 @@ static void apply_power_mode(PowerMode mode, const char *source) {
              source ? source : "unknown source");
 }
 
-/* DBus mode change handler */
+static PowerMode mode_from_string(const char *s) {
+    if (!s) return MODE_BALANCE;
+    if (strcmp(s, "powersave") == 0)   return MODE_POWERSAVE;
+    if (strcmp(s, "performance") == 0) return MODE_PERFORMANCE;
+    if (strcmp(s, "fast") == 0)        return MODE_FAST;
+    return MODE_BALANCE;
+}
+
+/* Single choke point for effective-mode decisions.  Build the candidate table
+ * from the latest scan, resolve each game's per-app mode, take the foreground
+ * identity from the scheduler, and let the pure selector decide.  Every event
+ * that can change the outcome (scan, SetActiveProcess, SetMode, per-app rule
+ * edit, config reload) routes here so foreground overrides and the user
+ * baseline stay consistent. */
+static void recompute_effective_mode(const char *source) {
+    if (!g_sm) return;
+
+    ModeCandidate candidates[MAX_GAMES];
+    size_t count = 0;
+    if (g_scanner) {
+        for (int i = 0; i < g_nr_game_results && count < MAX_GAMES; i++) {
+            candidates[count].process.pid = g_game_results[i].pid;
+            candidates[count].process.start_time =
+                g_game_results[i].start_time;
+            candidates[count].mode = mode_from_string(
+                game_scanner_get_app_mode(g_scanner,
+                                          g_game_results[i].comm));
+            count++;
+        }
+    }
+
+    ProcessIdentity active = {0};
+    if (g_task_scheduler)
+        task_scheduler_get_active_identity(g_task_scheduler, &active.pid,
+                                           &active.start_time);
+
+    PowerMode effective = mode_selector_select(candidates, count, active,
+                                               g_requested_mode);
+    apply_power_mode(effective, source);
+}
+
+/* DBus mode change handler: update the user's baseline, then recompute — never
+ * apply `requested` directly, or a global mode switch would briefly clobber an
+ * active foreground game's per-app override. */
 static void dbus_mode_handler(const char *mode, void *ud) {
     (void)ud;
     if (!mode) return;
@@ -637,7 +780,7 @@ static void dbus_mode_handler(const char *mode, void *ud) {
     else
         return;
     g_requested_mode = power_mode;
-    apply_power_mode(power_mode, "D-Bus request");
+    recompute_effective_mode("D-Bus request");
 }
 static void signal_handler(int sig) {
     if (sig == SIGINT || sig == SIGTERM || sig == SIGQUIT) {
@@ -679,6 +822,8 @@ static void apply_initial_state(void) {
      * applied later through their validated paths. */
     log_info("Publishing initial balance mode");
     if (g_dbus) dbus_manager_set_mode(g_dbus, "balance");
+    /* A game with a per-app override may already be running at startup. */
+    recompute_effective_mode("startup");
 }
 
 static const char *scene_to_string(SceneState scene) {
@@ -725,6 +870,18 @@ static ThermalManager *create_thermal_manager(const Config *config) {
     return manager;
 }
 
+static HeavyLoadDetector *create_heavyload_detector(const Config *config) {
+    if (!config || !config->heavyload.enable) return NULL;
+    HeavyLoadDetector *d = heavyload_detector_new(
+        config->heavyload.sample_time_ms,
+        config->heavyload.heavy_load_pct,
+        config->heavyload.idle_load_pct,
+        config->heavyload.burst_slack_ms);
+    if (!d)
+        log_warn("Failed to create heavy load detector");
+    return d;
+}
+
 static gboolean reload_configuration(void) {
     Config next_config;
     if (config_load(&next_config, g_config_path) < 0 ||
@@ -734,7 +891,7 @@ static gboolean reload_configuration(void) {
     }
 
     StateMachine *next_sm = state_machine_new(&next_config);
-    SysfsWriter *next_writer = sysfs_writer_new(&next_config, 1000000);
+    SysfsWriter *next_writer = sysfs_writer_new(&next_config);
     if (!next_sm || !next_writer) {
         state_machine_free(next_sm);
         sysfs_writer_free(next_writer);
@@ -745,8 +902,12 @@ static gboolean reload_configuration(void) {
 
     PowerMode active_mode = state_machine_get_mode(g_sm);
     state_machine_set_mode(next_sm, active_mode);
-    if (g_detector && heavyload_detector_is_heavy(g_detector))
+    bool was_heavy = g_detector && heavyload_detector_is_heavy(g_detector);
+    if (was_heavy)
         state_machine_feed_event(next_sm, EVT_HEAVY_LOAD_START);
+
+    /* Rebuild the detector so new heavyload params take effect on reload. */
+    HeavyLoadDetector *next_detector = create_heavyload_detector(&next_config);
 
     InputMonitor *next_input = create_input_monitor(&next_config);
     ThermalManager *next_thermal = create_thermal_manager(&next_config);
@@ -756,6 +917,7 @@ static gboolean reload_configuration(void) {
     /* Release all limits using the writer and originals belonging to the old
      * configuration before swapping the live component set. */
     if (!restore_frequency_targets()) {
+        heavyload_detector_free(next_detector);
         thermal_manager_free(next_thermal);
         input_monitor_free(next_input);
         sysfs_writer_free(next_writer);
@@ -769,6 +931,7 @@ static gboolean reload_configuration(void) {
     SysfsWriter *old_writer = g_writer;
     InputMonitor *old_input = g_im;
     ThermalManager *old_thermal = g_thermal;
+    HeavyLoadDetector *old_detector = g_detector;
 
     /* Scheduling state is tied to parsed rules. Restore the old policy before
      * atomically installing managers built from the new configuration. */
@@ -782,8 +945,9 @@ static gboolean reload_configuration(void) {
     g_writer = next_writer;
     g_im = next_input;
     g_thermal = next_thermal;
-    g_task_scheduler = task_scheduler_new(&g_config, SCHEDULER_STATE_FILE);
-    g_cgroup_manager = cgroup_manager_new(&g_config, CGROUP_STATE_FILE);
+    g_detector = next_detector;
+    g_task_scheduler = task_scheduler_new(&g_config, g_scheduler_state_path);
+    g_cgroup_manager = cgroup_manager_new(&g_config, g_cgroup_state_path);
     if (!g_task_scheduler || !g_cgroup_manager ||
         (g_config.cgroup.enable &&
          !cgroup_manager_is_available(g_cgroup_manager))) {
@@ -793,7 +957,7 @@ static gboolean reload_configuration(void) {
     } else if (active_pid > 0) {
         task_scheduler_set_active_pid(g_task_scheduler, active_pid);
     }
-    discover_manual_frequency_targets();
+    discover_manual_frequency_targets(true);
 
     if (g_scanner) {
         game_scanner_perapp_scan(g_scanner, g_config.switcher.perapp_file);
@@ -806,6 +970,11 @@ static gboolean reload_configuration(void) {
             scene_to_string(state_machine_get_scene(g_sm)));
     }
 
+    /* The new state machine starts at its default mode; re-apply the effective
+     * mode (user baseline + any active foreground override) against it. */
+    recompute_effective_mode("config reload");
+
+    heavyload_detector_free(old_detector);
     thermal_manager_free(old_thermal);
     input_monitor_free(old_input);
     sysfs_writer_free(old_writer);
@@ -964,8 +1133,8 @@ static int event_loop(void) {
 
         /* Periodic game scan (every 5 seconds) */
         static uint64_t last_scan = 0;
-        uint64_t now = (uint64_t)time(NULL);
-        if (now - last_scan > 5) {
+        uint64_t now = runtime_backend_monotonic_ms();
+        if (last_scan == 0 || now - last_scan >= 5000) {
             last_scan = now;
             if (g_scanner) {
                 game_scanner_scan(g_scanner);
@@ -973,26 +1142,9 @@ static int event_loop(void) {
                 g_nr_game_results = game_scanner_get_results(
                     g_scanner, g_game_results, MAX_GAMES);
                 int nr = g_nr_game_results;
-                PowerMode detected_mode = MODE_BALANCE;
-                for (int i = 0; i < nr; i++) {
-                    const char *app_mode = game_scanner_get_app_mode(
-                        g_scanner, g_game_results[i].comm);
-                    if (strcmp(app_mode, "performance") == 0 ||
-                        strcmp(app_mode, "fast") == 0) {
-                        detected_mode = MODE_PERFORMANCE;
-                        break;
-                    }
-                    if (strcmp(app_mode, "powersave") == 0)
-                        detected_mode = MODE_POWERSAVE;
-                }
-                if (detected_mode != g_last_detected_app_mode) {
-                    g_last_detected_app_mode = detected_mode;
-                    apply_power_mode(
-                        detected_mode == MODE_BALANCE
-                            ? g_requested_mode : detected_mode,
-                        detected_mode == MODE_BALANCE
-                            ? "per-app override ended" : "per-app rule");
-                }
+                /* The scan may have added/removed games or changed their
+                 * per-app modes; let the selector recompute the winner. */
+                recompute_effective_mode("game scan");
                 if (g_dbus) {
                     GameProcessEntry dbus_games[MAX_GAMES];
                     for (int i = 0; i < nr; i++) {
@@ -1021,10 +1173,16 @@ static int event_loop(void) {
         /* Apply process/thread scheduling at a bounded cadence. The task
          * scheduler itself performs slower full process discovery and faster
          * active-thread reconciliation. */
-        gint64 policy_now_us = g_get_monotonic_time();
+        gint64 policy_now_us =
+            (gint64)runtime_backend_monotonic_ms() * 1000;
         if (last_policy_update_us == 0 ||
             policy_now_us - last_policy_update_us >= 250000) {
             last_policy_update_us = policy_now_us;
+            ProcessIdentity previous_active = {0};
+            if (g_task_scheduler)
+                task_scheduler_get_active_identity(
+                    g_task_scheduler, &previous_active.pid,
+                    &previous_active.start_time);
             if (g_task_scheduler &&
                 task_scheduler_update(g_task_scheduler, g_game_results,
                                       g_nr_game_results,
@@ -1033,6 +1191,15 @@ static int event_loop(void) {
                  policy_now_us - last_sched_error_log_us >= 5000000)) {
                 log_warn("Task scheduling reconciliation reported errors");
                 last_sched_error_log_us = policy_now_us;
+            }
+            ProcessIdentity current_active = {0};
+            if (g_task_scheduler) {
+                task_scheduler_get_active_identity(
+                    g_task_scheduler, &current_active.pid,
+                    &current_active.start_time);
+                if (current_active.pid != previous_active.pid ||
+                    current_active.start_time != previous_active.start_time)
+                    recompute_effective_mode("active process changed");
             }
             if (g_task_scheduler && g_dbus)
                 dbus_manager_set_active_pid(
@@ -1093,6 +1260,41 @@ int main(int argc, char *argv[]) {
     LogLevel log_level = UPERF_LOG_INFO;
     const char *log_file = NULL;
     int use_journald = 0;
+
+#ifdef UPERF_TEST_RUNTIME
+    const char *test_proc = getenv("UPERF_TEST_PROC_ROOT");
+    const char *test_sysfs = getenv("UPERF_TEST_SYSFS_ROOT");
+    const char *test_frequency_state = getenv("UPERF_TEST_FREQUENCY_STATE");
+    const char *test_scheduler_state = getenv("UPERF_TEST_SCHEDULER_STATE");
+    const char *test_cgroup_state = getenv("UPERF_TEST_CGROUP_STATE");
+    if (test_proc || test_sysfs || test_frequency_state ||
+        test_scheduler_state || test_cgroup_state) {
+        if (!test_proc || !test_sysfs || !test_frequency_state ||
+            !test_scheduler_state || !test_cgroup_state ||
+            runtime_backend_configure(test_proc, test_sysfs, NULL, NULL) != 0 ||
+            snprintf(g_frequency_state_path,
+                     sizeof(g_frequency_state_path), "%s",
+                     test_frequency_state) >=
+                (int)sizeof(g_frequency_state_path) ||
+            snprintf(g_scheduler_state_path,
+                     sizeof(g_scheduler_state_path), "%s",
+                     test_scheduler_state) >=
+                (int)sizeof(g_scheduler_state_path) ||
+            snprintf(g_cgroup_state_path, sizeof(g_cgroup_state_path), "%s",
+                     test_cgroup_state) >= (int)sizeof(g_cgroup_state_path)) {
+            fprintf(stderr, "Invalid UPERF_TEST_* runtime configuration\n");
+            return 2;
+        }
+        g_test_runtime_enabled = true;
+    }
+    g_test_recovery_only =
+        getenv("UPERF_TEST_RECOVERY_ONLY") &&
+        strcmp(getenv("UPERF_TEST_RECOVERY_ONLY"), "1") == 0;
+    if (g_test_recovery_only && !g_test_runtime_enabled) {
+        fprintf(stderr, "Recovery-only mode requires an injected runtime\n");
+        return 2;
+    }
+#endif
 
     static struct option long_opts[] = {
         {"config",    required_argument, 0, 'c'},
@@ -1164,22 +1366,41 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    g_writer = sysfs_writer_new(&g_config, 1000000);  /* 1ms batch window */
+    g_writer = sysfs_writer_new(&g_config);
     if (!g_writer) {
         log_warn("Failed to create sysfs writer (continuing without batching)");
     } else {
-        discover_manual_frequency_targets();
+        bool recovery_ready = true;
+        int recovery = FREQUENCY_RECOVERY_NOT_NEEDED;
+        if (frequency_writes_allowed()) {
+            size_t restored = 0;
+            recovery = frequency_recovery_restore(
+                g_frequency_state_path, g_writer, &restored);
+            if (recovery == FREQUENCY_RECOVERY_ERROR) {
+                recovery_ready = false;
+                log_error("Crash recovery of frequency limits failed; "
+                          "automatic control disabled");
+            } else if (recovery == FREQUENCY_RECOVERY_OK) {
+                log_info("Restored %zu frequency target(s) left by a "
+                         "previous daemon", restored);
+            }
+        }
+#ifdef UPERF_TEST_RUNTIME
+        if (g_test_recovery_only) {
+            int recovery_status = recovery == FREQUENCY_RECOVERY_OK ? 0 : 1;
+            sysfs_writer_free(g_writer);
+            state_machine_free(g_sm);
+            config_free(&g_config);
+            log_shutdown();
+            return recovery_status;
+        }
+#endif
+        discover_manual_frequency_targets(recovery_ready);
     }
 
-    g_detector = heavyload_detector_new(
-        10.0f,    /* 10ms sample time */
-        60.0f,    /* heavy load threshold (%) */
-        20.0f,    /* idle load threshold (%) */
-        3000.0f   /* 3 second burst slack */
-    );
-    if (!g_detector) {
-        log_warn("Failed to create heavy load detector");
-    }
+    g_detector = create_heavyload_detector(&g_config);
+    if (!g_detector && !g_config.heavyload.enable)
+        log_info("Heavy-load detector disabled by config");
 
     g_im = create_input_monitor(&g_config);
 
@@ -1192,8 +1413,8 @@ int main(int argc, char *argv[]) {
             g_scanner, g_game_results, MAX_GAMES);
     }
 
-    g_task_scheduler = task_scheduler_new(&g_config, SCHEDULER_STATE_FILE);
-    g_cgroup_manager = cgroup_manager_new(&g_config, CGROUP_STATE_FILE);
+    g_task_scheduler = task_scheduler_new(&g_config, g_scheduler_state_path);
+    g_cgroup_manager = cgroup_manager_new(&g_config, g_cgroup_state_path);
     if (!g_task_scheduler || !g_cgroup_manager ||
         (g_config.cgroup.enable &&
          !cgroup_manager_is_available(g_cgroup_manager))) {
@@ -1238,7 +1459,8 @@ int main(int argc, char *argv[]) {
     /* Cleanup */
     log_info("Shutting down...");
     if (restore_frequency_targets()) {
-        if (frequency_state_clear(FREQUENCY_STATE_FILE) != FREQUENCY_STATE_OK)
+        if (frequency_state_clear(g_frequency_state_path) !=
+            FREQUENCY_STATE_OK)
             log_warn("Could not remove frequency state snapshot");
     } else {
         log_error("One or more frequency limits could not be restored; "

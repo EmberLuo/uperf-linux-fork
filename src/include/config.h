@@ -5,6 +5,12 @@
 #include <stdbool.h>
 #include "power_model.h"
 
+/* Config schema version the daemon understands.  A config may declare
+ * meta.schemaVersion; the daemon accepts an absent version (0, legacy) or any
+ * value <= this, and rejects a newer schema it cannot interpret.  Bump this
+ * whenever an incompatible schema change lands. */
+#define CONFIG_SCHEMA_VERSION 1
+
 #define MAX_CLUSTERS     4
 #define MAX_CPUS         64
 #define MAX_CPU_MASK_GROUPS 8
@@ -19,24 +25,10 @@
 #define MAX_PATH_LEN     256
 #define MAX_NAME_LEN     64
 
-/* ---- Knob types for sysfs_writer ---- */
-typedef enum {
-    KNOB_PERCPU,        /* /sys/.../cpu%d/...  (one write per CPU) */
-    KNOB_PERCLUSTER,    /* One value for all CPUs in a cluster */
-    KNOB_DEVFREQ,       /* /sys/class/devfreq/... */
-    KNOB_UCLAMP,        /* /sys/fs/cgroup/.../cpu.uclamp.* */
-    KNOB_STRING,        /* Arbitrary string write (e.g. governor name) */
-    KNOB_FILE,          /* Generic file write */
-    KNOB_NUM_TYPES
-} KnobType;
-
-/* A single configurable sysfs knob */
+/* A sysfs path consumed by the runtime. */
 typedef struct {
     char        name[MAX_NAME_LEN];
-    char        path[MAX_PATH_LEN];       /* May contain %d for CPU index */
-    KnobType    type;
-    bool        enabled;
-    char        note[MAX_NAME_LEN];       /* Human-readable description */
+    char        path[MAX_PATH_LEN];
 } KnobDef;
 
 /* Power mode preset name */
@@ -49,56 +41,40 @@ typedef enum {
 } PowerMode;
 
 /* Presence bits for scalar tuning values in a preset.  A separate mask is
- * required because zero and false are valid explicit overrides. */
+ * required because zero and false are valid explicit overrides.
+ *
+ * Only the tuning fields actually consumed by the runtime are represented:
+ * margin/burst feed the frequency demand calculation (frequency_controller.c),
+ * limit_efficiency caps a cluster at its sweet frequency, and base_sample_time
+ * drives the main-loop poll interval (main.c).  Upstream Uperf additionally
+ * defined latencyTime/slowLimitPower/fastLimitPower/fastLimitCapacity/
+ * fastLimitRecoverScale/guideCap/baseSlackTime/predictThd, but none of those
+ * were ever read by any decision path here, so they have been removed rather
+ * than carried forward as dead configuration. */
 typedef enum {
-    ACTION_TUNE_LATENCY_TIME             = 1u << 0,
-    ACTION_TUNE_SLOW_LIMIT_POWER         = 1u << 1,
-    ACTION_TUNE_FAST_LIMIT_POWER         = 1u << 2,
-    ACTION_TUNE_FAST_LIMIT_CAPACITY      = 1u << 3,
-    ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE = 1u << 4,
-    ACTION_TUNE_MARGIN                   = 1u << 5,
-    ACTION_TUNE_BURST                    = 1u << 6,
-    ACTION_TUNE_GUIDE_CAP                = 1u << 7,
-    ACTION_TUNE_LIMIT_EFFICIENCY         = 1u << 8,
-    ACTION_TUNE_BASE_SAMPLE_TIME         = 1u << 9,
-    ACTION_TUNE_BASE_SLACK_TIME          = 1u << 10,
-    ACTION_TUNE_PREDICT_THD              = 1u << 11,
+    ACTION_TUNE_MARGIN                   = 1u << 0,
+    ACTION_TUNE_BURST                    = 1u << 1,
+    ACTION_TUNE_LIMIT_EFFICIENCY         = 1u << 2,
+    ACTION_TUNE_BASE_SAMPLE_TIME         = 1u << 3,
 } ActionTuningField;
 
-/* CPU frequency / uClamp limits for an action */
+/* CPU frequency limits and tuning params for an action.
+ *
+ * cpu_freq_min/max are consumed by frequency_controller_compute_limits() as
+ * explicit per-cluster clamps.  They are not yet wired to any JSON key (no
+ * parse site sets has_cpu_freq_*), so today they only ever take effect in
+ * unit tests; the plumbing is retained because it is live decision code. */
 typedef struct {
     uint32_t     tuning_present;
     bool         has_cpu_freq_max;
     int          cpu_freq_max[MAX_CLUSTERS];  /* Hz */
     bool         has_cpu_freq_min;
     int          cpu_freq_min[MAX_CLUSTERS];
-    bool         has_gpu_max_freq;
-    int          gpu_max_freq;                /* Hz */
-    bool         has_gpu_min_freq;
-    int          gpu_min_freq;
-    bool         has_ddr_max_freq;
-    int          ddr_max_freq;
-    bool         has_uclamp_min;
-    int          uclamp_min[MAX_CLUSTERS];    /* 0-1024 */
-    bool         has_uclamp_max;
-    int          uclamp_max[MAX_CLUSTERS];
-    bool         has_governor;
-    char         governor[MAX_NAME_LEN];
-    bool         has_sched_boost;
-    int          sched_boost_value;
-    /* Global tuning params (from initials/presets) */
-    float        latency_time;
-    float        slow_limit_power;
-    float        fast_limit_power;
-    float        fast_limit_capacity;
-    float        fast_limit_recover_scale;
+    /* Global tuning params consumed by the runtime */
     float        margin;
     float        burst;
-    bool         guide_cap;
     bool         limit_efficiency;
     float        base_sample_time;
-    float        base_slack_time;
-    float        predict_thd;
 } ActionParams;
 
 /* State-specific action overrides */
@@ -117,25 +93,14 @@ typedef struct {
 typedef struct {
     char                        name[MAX_NAME_LEN];
     StatePresets                presets;
-    /* Global CPU tuning params */
-    float                       latency_time;      /* seconds */
-    float                       slow_limit_power;  /* Watts */
-    float                       fast_limit_power;  /* Watts */
-    float                       fast_limit_capacity;
-    float                       fast_limit_recover_scale;
-    float                       margin;
-    float                       burst;
-    bool                        guide_cap;
-    bool                        limit_efficiency;
-    /* Sampling params */
-    float                       base_sample_time;  /* seconds */
-    float                       base_slack_time;
-    float                       predict_thd;
 } PowerModePreset;
 
-/* Switcher / hint configuration */
+/* Switcher / hint configuration.
+ *
+ * The upstream switchInode file (an external process writes a power-mode name
+ * that Uperf polls) has no runtime reader here — power mode is driven by D-Bus
+ * and per-app rules instead — so the field is not carried. */
 typedef struct {
-    char switch_inode[MAX_PATH_LEN];
     char perapp_file[MAX_PATH_LEN];
     float hint_duration[8];  /* idle, touch, trigger, gesture, junk, switch, boost, _ */
 } SwitcherConfig;
@@ -147,7 +112,6 @@ typedef struct {
     float   gesture_thd_x;
     float   gesture_thd_y;
     float   gesture_delay_time;
-    float   hold_enter_time;
     int     screen_width;   /* Physical screen width in pixels (0 = auto-detect) */
     int     screen_height;  /* Physical screen height in pixels (0 = auto-detect) */
 } InputConfig;
@@ -244,9 +208,9 @@ typedef struct {
     int nr_clusters;
 } CpuConfig;
 
-/* Sysfs module configuration */
+/* Sysfs paths used for GPU frequency target discovery. CPU cpufreq policies
+ * are discovered directly from /sys/devices/system/cpu/cpufreq. */
 typedef struct {
-    bool enable;
     KnobDef knobs[MAX_KNOBS];
     int nr_knobs;
 } SysfsConfig;
@@ -260,10 +224,22 @@ typedef struct {
     int recovery_temp;
 } ThermalConfig;
 
+/* Heavy-load / boost detector parameters, configured under modules.heavyload.
+ * sample_time_ms is the MINIMUM sampling interval: the daemon's main loop runs
+ * at 10-250ms cadence, so this is a floor, not a guaranteed period. */
+typedef struct {
+    bool  enable;
+    float sample_time_ms;   /* [1, 1000]   minimum /proc/stat sample interval */
+    float heavy_load_pct;   /* (idle, 100] load% that triggers boost */
+    float idle_load_pct;    /* [0, heavy)  load% that ends boost */
+    float burst_slack_ms;   /* [0, 60000]  cooldown before re-entering boost */
+} HeavyLoadConfig;
+
 /* Full config — the union of all module configs + presets */
 typedef struct {
     char meta_name[MAX_NAME_LEN];
     char meta_author[MAX_NAME_LEN];
+    int  meta_schema_version;   /* meta.schemaVersion; 0 if absent (legacy) */
 
     SwitcherConfig  switcher;
     InputConfig     input;
@@ -272,22 +248,15 @@ typedef struct {
     SchedConfig     sched;
     CgroupConfig    cgroup;
     ThermalConfig   thermal;
+    HeavyLoadConfig heavyload;
 
     PowerModePreset presets[MODE_NUM];
 
     /* Initial defaults (applied at startup before any state) */
-    float initial_latency_time;
-    float initial_slow_limit_power;
-    float initial_fast_limit_power;
-    float initial_fast_limit_capacity;
-    float initial_fast_limit_recover_scale;
     float initial_margin;
     float initial_burst;
-    bool  initial_guide_cap;
     bool  initial_limit_efficiency;
     float initial_base_sample_time;
-    float initial_base_slack_time;
-    float initial_predict_thd;
 } Config;
 
 /* Load config from JSON file. Returns 0 on success, -1 on error. */

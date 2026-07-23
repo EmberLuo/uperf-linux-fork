@@ -1,6 +1,7 @@
 #include "../src/include/state_machine.h"
 #include "../src/include/config.h"
 #include "../src/include/log.h"
+#include "../src/include/runtime_backend.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,10 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
+
+static uint64_t fake_now_ms(void *context) {
+    return *(const uint64_t *)context;
+}
 
 #define TEST(name) static void name(void)
 #define RUN_TEST(name) do { \
@@ -53,16 +58,16 @@ static Config *make_test_config(void) {
     cfg->switcher.hint_duration[SCENE_JUNK] = 0.06f;
     cfg->switcher.hint_duration[SCENE_SWITCH] = 0.4f;
     cfg->switcher.hint_duration[SCENE_BOOST] = 0.0f;
-    cfg->initial_latency_time = 0.2f;
-    cfg->initial_slow_limit_power = 3.0f;
-    cfg->initial_fast_limit_power = 6.0f;
+    cfg->initial_base_sample_time = 0.2f;
     cfg->initial_margin = 0.25f;
     cfg->presets[MODE_BALANCE].presets.global.margin = 0.35f;
     cfg->presets[MODE_BALANCE].presets.global.tuning_present =
         ACTION_TUNE_MARGIN;
-    cfg->presets[MODE_BALANCE].presets.trigger.latency_time = 0.0f;
+    /* trigger explicitly overrides base_sample_time to 0.0 (verifies that an
+     * explicit zero override is honored, not treated as "unset"). */
+    cfg->presets[MODE_BALANCE].presets.trigger.base_sample_time = 0.0f;
     cfg->presets[MODE_BALANCE].presets.trigger.tuning_present =
-        ACTION_TUNE_LATENCY_TIME;
+        ACTION_TUNE_BASE_SAMPLE_TIME;
     cfg->presets[MODE_PERFORMANCE].presets.global.margin = 0.75f;
     cfg->presets[MODE_PERFORMANCE].presets.global.tuning_present =
         ACTION_TUNE_MARGIN;
@@ -308,7 +313,7 @@ TEST(test_get_actions) {
     ActionParams params;
     state_machine_get_actions(sm, &params);
     /* Should return at least the initial defaults */
-    ASSERT_GT(params.latency_time, 0.0f, "latency_time set");
+    ASSERT_GT(params.base_sample_time, 0.0f, "base_sample_time set");
     state_machine_free(sm);
     ASSERT_PASS("actions retrievable with defaults");
 }
@@ -321,12 +326,12 @@ TEST(test_action_preset_inheritance_and_explicit_zero) {
     ActionParams params;
     state_machine_get_actions(sm, &params);
     ASSERT_NEAR(params.margin, 0.35f, 0.001f, "mode global overrides initial");
-    ASSERT_NEAR(params.latency_time, 0.2f, 0.001f, "initial inherited");
+    ASSERT_NEAR(params.base_sample_time, 0.2f, 0.001f, "initial inherited");
 
     state_machine_feed_event(sm, EVT_TOUCH_DOWN);
     state_machine_feed_event(sm, EVT_TOUCH_UP);
     state_machine_get_actions(sm, &params);
-    ASSERT_NEAR(params.latency_time, 0.0f, 0.001f,
+    ASSERT_NEAR(params.base_sample_time, 0.0f, 0.001f,
                 "explicit zero scene override preserved");
 
     state_machine_set_mode(sm, MODE_PERFORMANCE);
@@ -335,6 +340,28 @@ TEST(test_action_preset_inheritance_and_explicit_zero) {
                 "mode-specific global selected");
     state_machine_free(sm);
     ASSERT_PASS("preset layers merge with explicit zero support");
+}
+
+TEST(test_tick_uses_injected_monotonic_clock) {
+    uint64_t now = 100;
+    if (runtime_backend_configure("/proc", "/sys", fake_now_ms, &now) != 0) {
+        printf("FAIL (cannot inject clock)\n"); tests_failed++; return;
+    }
+    Config *cfg = make_test_config();
+    StateMachine *sm = state_machine_new(cfg);
+    free(cfg);
+    state_machine_feed_event(sm, EVT_TOUCH_DOWN);
+    now = 4099;
+    state_machine_tick(sm);
+    ASSERT_EQ((int)state_machine_get_scene(sm), SCENE_TOUCH,
+              "touch remains before 4s timeout");
+    now = 4100;
+    state_machine_tick(sm);
+    ASSERT_EQ((int)state_machine_get_scene(sm), SCENE_IDLE,
+              "touch expires exactly at fake-clock deadline");
+    state_machine_free(sm);
+    runtime_backend_reset();
+    ASSERT_PASS("state transitions need no sleeping with injected clock");
 }
 
 int main(void) {
@@ -362,6 +389,7 @@ int main(void) {
     RUN_TEST(test_get_hint_duration);
     RUN_TEST(test_get_actions);
     RUN_TEST(test_action_preset_inheritance_and_explicit_zero);
+    RUN_TEST(test_tick_uses_injected_monotonic_clock);
 
     printf("\nResults: %d/%d passed (%d failed)\n",
            tests_passed, tests_run, tests_failed);

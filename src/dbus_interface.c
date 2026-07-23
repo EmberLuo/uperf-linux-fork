@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "dbus_interface.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -173,6 +174,10 @@ static const gchar introspection_xml[] =
     "  </interface>\n"
     "</node>";
 
+const char *dbus_manager_introspection_xml(void) {
+    return introspection_xml;
+}
+
 /* Helper: emit a DBus signal on the bus connection */
 static void dbus_emit_signal(DbusManager *mgr, const char *signal_name, GVariant *params) {
     if (!mgr || !mgr->bus_conn) return;
@@ -316,7 +321,7 @@ static gboolean caller_may_target_pid(DbusManager *mgr, const char *sender,
     char proc_path[64];
     snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
     struct stat process_stat;
-    if (stat(proc_path, &process_stat) != 0 ||
+    if (runtime_backend_stat(proc_path, &process_stat) != 0 ||
         process_stat.st_uid != caller_uid) {
         log_warn("DBus %s denied: caller uid %u does not own pid %d",
                  method_name, (unsigned int)caller_uid, pid);

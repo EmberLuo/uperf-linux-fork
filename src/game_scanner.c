@@ -2,6 +2,7 @@
 #include "game_scanner.h"
 #include "log.h"
 #include "perapp_config.h"
+#include "runtime_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ static uint64_t read_process_start_time(pid_t pid) {
     char path[64];
     char buffer[1024];
     snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-    FILE *file = fopen(path, "r");
+    FILE *file = runtime_backend_fopen(path, "r");
     if (!file) return 0;
     if (!fgets(buffer, sizeof(buffer), file)) {
         fclose(file);
@@ -141,7 +142,7 @@ int game_scanner_pattern_count(const GameScanner *gs) {
 int game_scanner_scan(GameScanner *gs) {
     if (!gs) return -1;
 
-    DIR *proc = opendir("/proc");
+    DIR *proc = runtime_backend_opendir("/proc");
     if (!proc) {
         log_error("game_scanner: cannot open /proc: %s", strerror(errno));
         return -1;
@@ -160,7 +161,7 @@ int game_scanner_scan(GameScanner *gs) {
         char comm_path[64];
         char comm[64];
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(comm_path, "r");
+        FILE *fp = runtime_backend_fopen(comm_path, "r");
         if (!fp) continue;
         if (!fgets(comm, sizeof(comm), fp)) {
             fclose(fp);
@@ -173,7 +174,7 @@ int game_scanner_scan(GameScanner *gs) {
         char cmdline[512] = {0};
         bool command_matches = false;
         snprintf(comm_path, sizeof(comm_path), "/proc/%d/cmdline", pid);
-        fp = fopen(comm_path, "r");
+        fp = runtime_backend_fopen(comm_path, "r");
         if (fp) {
             size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, fp);
             /* Only the executable/process-name token participates in game

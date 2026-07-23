@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "log.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -210,7 +211,6 @@ static void detect_cpu_topology(FILE *fp) {
         if (free_mhz < min_mhz) free_mhz = min_mhz;
         int efficiency = nr_policies == 1
             ? 250 : 180 + (nr_policies - 1 - c) * 85;
-        float typical_power = 0.8f + (nr_policies - 1 - c) * 0.3f;
 
         if (c > 0) fprintf(fp, ",\n");
         fprintf(fp, "      {\n");
@@ -219,10 +219,8 @@ static void detect_cpu_topology(FILE *fp) {
         fprintf(fp, "        \"cpus\": ");
         emit_cpu_mask_array(fp, policies[c].cpu_mask);
         fprintf(fp, ",\n");
-        fprintf(fp, "        \"typicalPower\": %.1f,\n", typical_power);
         fprintf(fp, "        \"typicalFreq\": %.0f,\n", max_mhz);
         fprintf(fp, "        \"sweetFreq\": %.0f,\n", max_mhz * 0.75f);
-        fprintf(fp, "        \"plainFreq\": %.0f,\n", max_mhz * 0.55f);
         fprintf(fp, "        \"freeFreq\": %.0f\n", free_mhz);
         fprintf(fp, "      }");
     }
@@ -245,17 +243,9 @@ static void emit_sysfs_knob(FILE *fp, int *count, const char *name,
 static void detect_devfreq(FILE *fp) {
     fprintf(fp, "  \"sysfs\": {\n");
     json_indent_in();
-    fprintf(fp, "    \"enable\": true,\n");
     fprintf(fp, "    \"knob\": {\n");
 
     int nr_knobs = 0;
-    emit_sysfs_knob(fp, &nr_knobs, "cpufreqMax",
-                    "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq");
-    emit_sysfs_knob(fp, &nr_knobs, "cpufreqMin",
-                    "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_min_freq");
-    emit_sysfs_knob(fp, &nr_knobs, "cpufreqGovernor",
-                    "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor");
-
     /* Scan devfreq devices */
     DIR *df = opendir("/sys/class/devfreq");
     if (df) {
@@ -269,31 +259,19 @@ static void detect_devfreq(FILE *fp) {
             char *device_name = read_file(name_path);
             const char *name = device_name ? device_name : ent->d_name;
 
-            const char *prefix = NULL;
-            if (strstr(name, "gpu")) prefix = "gpu";
-            else if (strstr(name, "cpu-cpu-llcc-bw")) prefix = "memBw";
-            else if (strstr(name, "cpu-llcc-ddr-bw")) prefix = "ddr";
-            else if (strstr(name, "soc")) prefix = "soc";
-
-            if (prefix) {
+            if (strstr(name, "gpu")) {
                 char knob_name[64];
                 char path[512];
                 snprintf(path, sizeof(path), "/sys/class/devfreq/%s/max_freq",
                          ent->d_name);
                 if (access(path, F_OK) == 0) {
-                    snprintf(knob_name, sizeof(knob_name), "%sMaxFreq", prefix);
+                    snprintf(knob_name, sizeof(knob_name), "gpuMaxFreq");
                     emit_sysfs_knob(fp, &nr_knobs, knob_name, path);
                 }
                 snprintf(path, sizeof(path), "/sys/class/devfreq/%s/min_freq",
                          ent->d_name);
                 if (access(path, F_OK) == 0) {
-                    snprintf(knob_name, sizeof(knob_name), "%sMinFreq", prefix);
-                    emit_sysfs_knob(fp, &nr_knobs, knob_name, path);
-                }
-                snprintf(path, sizeof(path), "/sys/class/devfreq/%s/governor",
-                         ent->d_name);
-                if (access(path, F_OK) == 0) {
-                    snprintf(knob_name, sizeof(knob_name), "%sGovernor", prefix);
+                    snprintf(knob_name, sizeof(knob_name), "gpuMinFreq");
                     emit_sysfs_knob(fp, &nr_knobs, knob_name, path);
                 }
             }
@@ -318,11 +296,19 @@ static void detect_thermal(FILE *fp) {
     fprintf(fp, "    \"warn_temp\": 70000,\n");
     fprintf(fp, "    \"throttle_temp\": 80000,\n");
     fprintf(fp, "    \"critical_temp\": 95000,\n");
-    fprintf(fp, "    \"recovery_temp\": 75000,\n");
-
-    fprintf(fp, "    \"monitor_all_zones\": true\n");
+    fprintf(fp, "    \"recovery_temp\": 75000\n");
 
     json_indent_out();
+    fprintf(fp, "  },\n");
+}
+
+static void emit_heavyload(FILE *fp) {
+    fprintf(fp, "  \"heavyload\": {\n");
+    fprintf(fp, "    \"enable\": true,\n");
+    fprintf(fp, "    \"sampleTimeMs\": 10.0,\n");
+    fprintf(fp, "    \"heavyLoadPct\": 60.0,\n");
+    fprintf(fp, "    \"idleLoadPct\": 20.0,\n");
+    fprintf(fp, "    \"burstSlackMs\": 3000.0\n");
     fprintf(fp, "  },\n");
 }
 
@@ -409,8 +395,7 @@ static void detect_touchscreen(FILE *fp) {
     fprintf(fp, "    \"swipeThd\": 0.03,\n");
     fprintf(fp, "    \"gestureThdX\": 0.03,\n");
     fprintf(fp, "    \"gestureThdY\": 0.03,\n");
-    fprintf(fp, "    \"gestureDelayTime\": 2.0,\n");
-    fprintf(fp, "    \"holdEnterTime\": 1.0\n");
+    fprintf(fp, "    \"gestureDelayTime\": 2.0\n");
     json_indent_out();
     fprintf(fp, "  }\n");
 }
@@ -420,7 +405,8 @@ static void generate_config(FILE *fp, const char *soc_name) {
     fprintf(fp, "{\n");
     fprintf(fp, "  \"meta\": {\n");
     fprintf(fp, "    \"name\": \"%s [auto-generated]\",\n", soc_name);
-    fprintf(fp, "    \"author\": \"uperf-linux config wizard\"\n");
+    fprintf(fp, "    \"author\": \"uperf-linux config wizard\",\n");
+    fprintf(fp, "    \"schemaVersion\": %d\n", CONFIG_SCHEMA_VERSION);
     fprintf(fp, "  },\n");
 
     fprintf(fp, "  \"modules\": {\n");
@@ -429,7 +415,6 @@ static void generate_config(FILE *fp, const char *soc_name) {
     /* Switcher */
     fprintf(fp, "    \"switcher\": {\n");
     json_indent_in();
-    fprintf(fp, "      \"switchInode\": \"/run/uperf-linux/cur_powermode\",\n");
     fprintf(fp, "      \"perapp\": \"/etc/uperf-linux/perapp_powermode\",\n");
     fprintf(fp, "      \"hintDuration\": {\n");
     json_indent_in();
@@ -448,6 +433,7 @@ static void generate_config(FILE *fp, const char *soc_name) {
     detect_cpu_topology(fp);
     detect_devfreq(fp);
     detect_thermal(fp);
+    emit_heavyload(fp);
     detect_touchscreen(fp);
 
     json_indent_out();
@@ -459,16 +445,8 @@ static void generate_config(FILE *fp, const char *soc_name) {
     fprintf(fp, "    \"cpu\": {\n");
     json_indent_in();
     fprintf(fp, "\"baseSampleTime\": 0.01,\n");
-    fprintf(fp, "\"baseSlackTime\": 0.01,\n");
-    fprintf(fp, "\"latencyTime\": 0.2,\n");
-    fprintf(fp, "\"slowLimitPower\": 3.0,\n");
-    fprintf(fp, "\"fastLimitPower\": 6.0,\n");
-    fprintf(fp, "\"fastLimitCapacity\": 10.0,\n");
-    fprintf(fp, "\"fastLimitRecoverScale\": 0.3,\n");
-    fprintf(fp, "\"predictThd\": 0.3,\n");
     fprintf(fp, "\"margin\": 0.25,\n");
     fprintf(fp, "\"burst\": 0.0,\n");
-    fprintf(fp, "\"guideCap\": false,\n");
     fprintf(fp, "\"limitEfficiency\": false\n");
     json_indent_out();
     fprintf(fp, "    }\n");
@@ -481,14 +459,14 @@ static void generate_config(FILE *fp, const char *soc_name) {
     fprintf(fp, "      \"*\": { \"cpu.margin\": 0.2 },\n");
     fprintf(fp, "      \"idle\": { \"cpu.baseSampleTime\": 0.04 },\n");
     fprintf(fp, "      \"touch\": { \"cpu.margin\": 0.4 },\n");
-    fprintf(fp, "      \"switch\": { \"cpu.latencyTime\": 0.0, \"cpu.margin\": 0.4 }\n");
+    fprintf(fp, "      \"switch\": { \"cpu.margin\": 0.4 }\n");
     fprintf(fp, "    },\n");
     fprintf(fp, "    \"powersave\": {\n");
-    fprintf(fp, "      \"*\": { \"cpu.latencyTime\": 0.4, \"cpu.margin\": 0.1 },\n");
+    fprintf(fp, "      \"*\": { \"cpu.margin\": 0.1 },\n");
     fprintf(fp, "      \"idle\": { \"cpu.baseSampleTime\": 0.04, \"cpu.limitEfficiency\": true }\n");
     fprintf(fp, "    },\n");
     fprintf(fp, "    \"performance\": {\n");
-    fprintf(fp, "      \"*\": { \"cpu.latencyTime\": 0.0, \"cpu.margin\": 0.4, \"cpu.burst\": 0.2 }\n");
+    fprintf(fp, "      \"*\": { \"cpu.margin\": 0.4, \"cpu.burst\": 0.2 }\n");
     fprintf(fp, "    }\n");
     fprintf(fp, "  }\n");
 

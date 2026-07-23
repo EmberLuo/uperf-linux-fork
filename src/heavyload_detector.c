@@ -1,12 +1,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include "heavyload_detector.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <time.h>
 #include <inttypes.h>
 #include <ctype.h>
 
@@ -88,7 +88,7 @@ float heavyload_calculate_cpu_load(const CpuStat *previous,
 
 /* Read per-CPU stats from /proc/stat */
 static int read_per_cpu_stats(CpuStat *stats, int nr_cpus) {
-    FILE *fp = fopen("/proc/stat", "r");
+    FILE *fp = runtime_backend_fopen("/proc/stat", "r");
     if (!fp) return -1;
 
     char line[256];
@@ -113,10 +113,7 @@ static int get_nr_cpus(void) {
 }
 
 static uint64_t monotonic_time_ms(void) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-        return 0;
-    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+    return runtime_backend_monotonic_ms();
 }
 
 static bool resize_cpu_arrays(HeavyLoadDetector *d, int nr_cpus) {

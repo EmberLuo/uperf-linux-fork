@@ -34,6 +34,12 @@ int task_scheduler_set_active_pid(TaskScheduler *scheduler, pid_t pid);
 pid_t task_scheduler_get_active_pid(const TaskScheduler *scheduler);
 pid_t task_scheduler_get_requested_active_pid(const TaskScheduler *scheduler);
 
+/* Report the effective foreground process identity (pid + start_time) so mode
+ * selection can match it against detected games without PID-reuse ambiguity.
+ * Writes 0/0 and returns false when there is no effective foreground pid. */
+bool task_scheduler_get_active_identity(const TaskScheduler *scheduler,
+                                        pid_t *pid, uint64_t *start_time);
+
 /* Reconcile process/thread rules with the live system. */
 int task_scheduler_update(TaskScheduler *scheduler,
                           const GameProcess *games, int nr_games,

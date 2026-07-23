@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "thermal.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
-#include <time.h>
 
 #ifndef MAX_PATH_LEN
 #define MAX_PATH_LEN 256
@@ -32,7 +32,7 @@ struct ThermalManager {
 
 /* Read a single line from a file, stripping newline */
 static int read_line(const char *path, char *buf, size_t len) {
-    FILE *fp = fopen(path, "r");
+    FILE *fp = runtime_backend_fopen(path, "r");
     if (!fp) return -1;
 
     if (!fgets(buf, (int)len, fp)) {
@@ -97,7 +97,7 @@ void thermal_manager_free(ThermalManager *tm) {
 int thermal_manager_discover_zones(ThermalManager *tm) {
     if (!tm) return -1;
 
-    DIR *dir = opendir("/sys/class/thermal/thermal_zone0");
+    DIR *dir = runtime_backend_opendir("/sys/class/thermal/thermal_zone0");
     if (!dir) {
         log_warn("thermal: no thermal zones found (not running on kernel with thermal framework)");
         return 0;
@@ -107,7 +107,7 @@ int thermal_manager_discover_zones(ThermalManager *tm) {
     tm->nr_zones = 0;
 
     /* Scan /sys/class/thermal/thermal_zoneN/ */
-    DIR *thermal_dir = opendir("/sys/class/thermal");
+    DIR *thermal_dir = runtime_backend_opendir("/sys/class/thermal");
     if (!thermal_dir) {
         log_error("thermal: cannot open /sys/class/thermal: %s", strerror(errno));
         return -1;
@@ -191,10 +191,7 @@ ThermalState thermal_manager_update(ThermalManager *tm) {
 
     ThermalState proposed = thermal_policy_next_state(
         &tm->policy, tm->current_state, tm->max_temp);
-    struct timespec now;
-    int64_t now_ms = 0;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
-        now_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+    int64_t now_ms = (int64_t)runtime_backend_monotonic_ms();
     ThermalState state = thermal_debounce_transition(
         tm->current_state, proposed, &tm->pending_state,
         &tm->pending_since_ms, now_ms);

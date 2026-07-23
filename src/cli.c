@@ -13,6 +13,20 @@
 #define DAEMON_IFACE "org.uperflinux.Daemon"
 #define CONTROL_CALL_TIMEOUT_MS 120000
 
+/* Exit codes.  Scripts distinguish these cases:
+ *   0  success
+ *   1  usage error: unknown command or wrong number of arguments
+ *   2  bad argument value: rejected client-side before contacting the daemon
+ *   3  daemon unavailable: could not reach it over the system bus
+ *   4  request rejected: daemon was reached but declined or errored the call */
+enum {
+    EXIT_OK          = 0,
+    EXIT_USAGE       = 1,
+    EXIT_BAD_ARG     = 2,
+    EXIT_UNAVAILABLE = 3,
+    EXIT_REJECTED    = 4,
+};
+
 static void print_usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s <command> [args]\n\n"
@@ -26,7 +40,10 @@ static void print_usage(const char *prog) {
         "      freq_hz: 0 releases the override\n"
         "  show-freqs                     Show frequencies reported by daemon\n"
         "  detect                         Run the hardware config wizard\n"
-        "  help                           Show this help\n",
+        "  help                           Show this help\n\n"
+        "Exit codes:\n"
+        "  0  success        1  usage error   2  bad argument value\n"
+        "  3  daemon unavailable            4  request rejected by daemon\n",
         prog);
 }
 
@@ -96,10 +113,10 @@ static void print_frequencies(GVariant *properties) {
 
 static int cmd_status(void) {
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *properties = get_all_properties(connection);
     g_object_unref(connection);
-    if (!properties) return 1;
+    if (!properties) return EXIT_UNAVAILABLE;
 
     const char *mode = "unknown";
     const char *scene = "unknown";
@@ -124,43 +141,43 @@ static int cmd_status(void) {
            games ? g_variant_n_children(games) : 0);
     if (games) g_variant_unref(games);
     g_variant_unref(properties);
-    return 0;
+    return EXIT_OK;
 }
 
 static int cmd_mode(const char *mode) {
     if (strcmp(mode, "balance") != 0 && strcmp(mode, "powersave") != 0 &&
         strcmp(mode, "performance") != 0) {
         fprintf(stderr, "Invalid mode: %s\n", mode);
-        return 1;
+        return EXIT_BAD_ARG;
     }
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *reply = daemon_call(connection, "SetMode",
                                   g_variant_new("(s)", mode),
                                   G_VARIANT_TYPE("(b)"));
     g_object_unref(connection);
-    if (!reply) return 1;
+    if (!reply) return EXIT_REJECTED;
     gboolean success = FALSE;
     g_variant_get(reply, "(b)", &success);
     g_variant_unref(reply);
     if (!success) {
         fprintf(stderr, "Daemon rejected mode '%s'\n", mode);
-        return 1;
+        return EXIT_REJECTED;
     }
     printf("Power mode set to: %s\n", mode);
-    return 0;
+    return EXIT_OK;
 }
 
 static int cmd_game_list(void) {
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *properties = get_all_properties(connection);
     g_object_unref(connection);
-    if (!properties) return 1;
+    if (!properties) return EXIT_UNAVAILABLE;
     GVariant *games = g_variant_lookup_value(
         properties, "GameProcesses", G_VARIANT_TYPE("a(issss)"));
     g_variant_unref(properties);
-    if (!games) return 1;
+    if (!games) return EXIT_REJECTED;
 
     gsize count = g_variant_n_children(games);
     for (gsize i = 0; i < count; i++) {
@@ -175,7 +192,7 @@ static int cmd_game_list(void) {
     if (count == 0) printf("  (no game processes detected)\n");
     printf("Total: %zu game process(es)\n", count);
     g_variant_unref(games);
-    return 0;
+    return EXIT_OK;
 }
 
 static int cmd_set_freq(const char *cluster_text, const char *freq_text) {
@@ -184,34 +201,34 @@ static int cmd_set_freq(const char *cluster_text, const char *freq_text) {
     long cluster = strtol(cluster_text, &end, 10);
     if (errno || end == cluster_text || *end || cluster < -1 || cluster > 3) {
         fprintf(stderr, "Invalid cluster: %s\n", cluster_text);
-        return 1;
+        return EXIT_BAD_ARG;
     }
     end = NULL;
     errno = 0;
     gint64 frequency = g_ascii_strtoll(freq_text, &end, 10);
     if (errno || end == freq_text || *end || frequency < 0) {
         fprintf(stderr, "Invalid frequency: %s\n", freq_text);
-        return 1;
+        return EXIT_BAD_ARG;
     }
 
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *reply = daemon_call(connection, "SetManualFreq",
                                   g_variant_new("(ix)", (gint)cluster,
                                                 frequency),
                                   G_VARIANT_TYPE("(b)"));
     g_object_unref(connection);
-    if (!reply) return 1;
+    if (!reply) return EXIT_REJECTED;
     gboolean success = FALSE;
     g_variant_get(reply, "(b)", &success);
     g_variant_unref(reply);
     if (!success) {
         fprintf(stderr, "Daemon rejected the frequency (check hardware range and permissions)\n");
-        return 1;
+        return EXIT_REJECTED;
     }
     printf("Manual override %s for cluster %ld\n",
            frequency == 0 ? "released" : "applied", cluster);
-    return 0;
+    return EXIT_OK;
 }
 
 static int cmd_active_pid(const char *pid_text) {
@@ -220,73 +237,74 @@ static int cmd_active_pid(const char *pid_text) {
     long pid = strtol(pid_text, &end, 10);
     if (errno || end == pid_text || *end || pid < 0 || pid > G_MAXINT32) {
         fprintf(stderr, "Invalid PID: %s\n", pid_text);
-        return 1;
+        return EXIT_BAD_ARG;
     }
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *reply = daemon_call(connection, "SetActiveProcess",
                                   g_variant_new("(i)", (gint)pid),
                                   G_VARIANT_TYPE("(b)"));
     g_object_unref(connection);
-    if (!reply) return 1;
+    if (!reply) return EXIT_REJECTED;
     gboolean success = FALSE;
     g_variant_get(reply, "(b)", &success);
     g_variant_unref(reply);
     if (!success) {
         fprintf(stderr, "Daemon rejected active PID %ld\n", pid);
-        return 1;
+        return EXIT_REJECTED;
     }
     if (pid == 0)
         printf("Active workload selection cleared\n");
     else
         printf("Active workload set to PID %ld\n", pid);
-    return 0;
+    return EXIT_OK;
 }
 
 static int cmd_show_freqs(void) {
     GDBusConnection *connection = connect_daemon();
-    if (!connection) return 1;
+    if (!connection) return EXIT_UNAVAILABLE;
     GVariant *properties = get_all_properties(connection);
     g_object_unref(connection);
-    if (!properties) return 1;
+    if (!properties) return EXIT_UNAVAILABLE;
     print_frequencies(properties);
     g_variant_unref(properties);
-    return 0;
+    return EXIT_OK;
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
         print_usage(argv[0]);
-        return 1;
+        return EXIT_USAGE;
     }
     const char *command = argv[1];
     if (strcmp(command, "help") == 0 || strcmp(command, "--help") == 0) {
         print_usage(argv[0]);
-        return 0;
+        return EXIT_OK;
     }
     if (strcmp(command, "version") == 0 || strcmp(command, "--version") == 0) {
         puts("uperfctl v0.1.0");
-        return 0;
+        return EXIT_OK;
     }
     if (strcmp(command, "status") == 0) return cmd_status();
     if (strcmp(command, "game-list") == 0) return cmd_game_list();
     if (strcmp(command, "show-freqs") == 0) return cmd_show_freqs();
     if (strcmp(command, "mode") == 0)
-        return argc == 3 ? cmd_mode(argv[2]) : (print_usage(argv[0]), 1);
+        return argc == 3 ? cmd_mode(argv[2])
+                         : (print_usage(argv[0]), EXIT_USAGE);
     if (strcmp(command, "set-freq") == 0)
         return argc == 4 ? cmd_set_freq(argv[2], argv[3])
-                         : (print_usage(argv[0]), 1);
+                         : (print_usage(argv[0]), EXIT_USAGE);
     if (strcmp(command, "active-pid") == 0)
         return argc == 3 ? cmd_active_pid(argv[2])
-                         : (print_usage(argv[0]), 1);
+                         : (print_usage(argv[0]), EXIT_USAGE);
     if (strcmp(command, "detect") == 0) {
         execl("/usr/bin/uperf-wizard", "uperf-wizard", "detect",
               (char *)NULL);
         execlp("uperf-wizard", "uperf-wizard", "detect", (char *)NULL);
         fprintf(stderr, "Cannot run uperf-wizard: %s\n", strerror(errno));
-        return 1;
+        return EXIT_UNAVAILABLE;
     }
     fprintf(stderr, "Unknown command: %s\n", command);
     print_usage(argv[0]);
-    return 1;
+    return EXIT_USAGE;
 }

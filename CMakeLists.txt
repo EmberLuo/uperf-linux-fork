@@ -40,11 +40,13 @@ find_library(LIBSYSTEMD_LIBRARY NAMES systemd
 # ---- Daemon sources ----
 set(UPERF_SOURCES
     src/log.c
+    src/runtime_backend.c
     src/config_parser.c
     src/sysfs_writer.c
     src/power_model.c
     src/frequency_controller.c
     src/frequency_state.c
+    src/frequency_recovery.c
     src/state_machine.c
     src/input_monitor.c
     src/task_scheduler.c
@@ -53,17 +55,20 @@ set(UPERF_SOURCES
     src/game_scanner.c
     src/thermal.c
     src/perapp_config.c
+    src/mode_selector.c
     src/dbus_interface.c
     src/main.c
 )
 
 set(UPERF_HEADERS
     src/include/log.h
+    src/include/runtime_backend.h
     src/include/config.h
     src/include/sysfs_writer.h
     src/include/power_model.h
     src/include/frequency_controller.h
     src/include/frequency_state.h
+    src/include/frequency_recovery.h
     src/include/state_machine.h
     src/include/input_monitor.h
     src/include/task_scheduler.h
@@ -72,6 +77,7 @@ set(UPERF_HEADERS
     src/include/game_scanner.h
     src/include/thermal.h
     src/include/perapp_config.h
+    src/include/mode_selector.h
     src/include/dbus_interface.h
 )
 
@@ -121,10 +127,35 @@ target_link_libraries(uperf-wizard PRIVATE
 if(BUILD_TESTS)
     enable_testing()
 
+    # The integration daemon is built from the production source list.  Its
+    # test-only macro enables fake procfs/sysfs/state paths; the installed
+    # uperf-linux target never exposes that environment-driven entry point.
+    add_executable(uperf-linux-test-runtime ${UPERF_SOURCES} ${UPERF_HEADERS})
+    target_compile_definitions(uperf-linux-test-runtime PRIVATE
+        UPERF_TEST_RUNTIME=1)
+    target_include_directories(uperf-linux-test-runtime PRIVATE
+        ${JSONC_INCLUDE_DIRS}
+        ${GLIB2_INCLUDE_DIRS}
+        ${LIBSYSTEMD_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    )
+    target_link_libraries(uperf-linux-test-runtime PRIVATE
+        m gio-2.0 dbus-1 gobject-2.0
+        PkgConfig::JSONC PkgConfig::POLKIT ${GLIB2_LIBRARIES}
+        pthread rt
+    )
+    if(LIBSYSTEMD_LIBRARY AND LIBSYSTEMD_INCLUDE_DIR)
+        target_link_libraries(uperf-linux-test-runtime PRIVATE
+            ${LIBSYSTEMD_LIBRARY})
+        target_compile_definitions(uperf-linux-test-runtime PRIVATE
+            HAVE_LIBSYSTEMD=1)
+    endif()
+
     add_executable(test_config_parser
         tests/test_config_parser.c
         src/config_parser.c
         src/log.c
+        src/runtime_backend.c
     )
     target_include_directories(test_config_parser PRIVATE
         ${JSONC_INCLUDE_DIRS}
@@ -132,7 +163,7 @@ if(BUILD_TESTS)
     )
     target_link_libraries(test_config_parser PRIVATE PkgConfig::JSONC pthread)
 
-    add_executable(test_state_machine tests/test_state_machine.c src/log.c src/state_machine.c)
+    add_executable(test_state_machine tests/test_state_machine.c src/log.c src/state_machine.c src/runtime_backend.c)
     target_include_directories(test_state_machine PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
@@ -155,25 +186,33 @@ if(BUILD_TESTS)
     )
     target_link_libraries(test_frequency_controller PRIVATE m pthread)
 
-    add_executable(test_sysfs_writer tests/test_sysfs_writer.c src/log.c src/sysfs_writer.c)
+    add_executable(test_sysfs_writer tests/test_sysfs_writer.c src/log.c src/sysfs_writer.c src/runtime_backend.c)
     target_include_directories(test_sysfs_writer PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_sysfs_writer PRIVATE pthread)
 
-    add_executable(test_game_scanner tests/test_game_scanner.c src/log.c src/game_scanner.c src/perapp_config.c)
+    add_executable(test_sysfs_fault_injection
+        tests/test_sysfs_fault_injection.c src/log.c src/sysfs_writer.c
+        src/runtime_backend.c)
+    target_include_directories(test_sysfs_fault_injection PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    )
+    target_link_libraries(test_sysfs_fault_injection PRIVATE pthread)
+
+    add_executable(test_game_scanner tests/test_game_scanner.c src/log.c src/game_scanner.c src/perapp_config.c src/runtime_backend.c)
     target_include_directories(test_game_scanner PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_game_scanner PRIVATE pthread)
 
-    add_executable(test_perapp_config tests/test_perapp_config.c src/log.c src/perapp_config.c)
+    add_executable(test_perapp_config tests/test_perapp_config.c src/log.c src/perapp_config.c src/runtime_backend.c)
     target_include_directories(test_perapp_config PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
     target_link_libraries(test_perapp_config PRIVATE pthread)
 
-    add_executable(test_thermal tests/test_thermal.c src/log.c src/thermal.c)
+    add_executable(test_thermal tests/test_thermal.c src/log.c src/thermal.c src/runtime_backend.c)
     target_include_directories(test_thermal PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
     )
@@ -193,6 +232,7 @@ if(BUILD_TESTS)
         tests/test_heavyload_detector.c
         src/log.c
         src/heavyload_detector.c
+        src/runtime_backend.c
     )
     target_include_directories(test_heavyload_detector PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
@@ -203,6 +243,7 @@ if(BUILD_TESTS)
         tests/test_task_scheduler.c
         src/task_scheduler.c
         src/log.c
+        src/runtime_backend.c
     )
     target_include_directories(test_task_scheduler PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
@@ -214,6 +255,7 @@ if(BUILD_TESTS)
             tests/test_cgroup_manager.c
             src/cgroup_manager.c
             src/log.c
+            src/runtime_backend.c
         )
         target_include_directories(test_cgroup_manager PRIVATE
             ${LIBSYSTEMD_INCLUDE_DIR}
@@ -229,6 +271,7 @@ if(BUILD_TESTS)
         tests/test_dbus_interface.c
         src/log.c
         src/dbus_interface.c
+        src/runtime_backend.c
     )
     target_include_directories(test_dbus_interface PRIVATE
         ${GLIB2_INCLUDE_DIRS}
@@ -238,10 +281,42 @@ if(BUILD_TESTS)
         gio-2.0 gobject-2.0 ${GLIB2_LIBRARIES} PkgConfig::POLKIT pthread
     )
 
+    add_executable(test_dbus_xml_guard
+        tests/test_dbus_xml_guard.c
+        src/log.c
+        src/dbus_interface.c
+        src/runtime_backend.c
+    )
+    target_include_directories(test_dbus_xml_guard PRIVATE
+        ${GLIB2_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    )
+    target_compile_definitions(test_dbus_xml_guard PRIVATE
+        CONFIG_DBUS_XML="${CMAKE_CURRENT_SOURCE_DIR}/config/dbus-interface.xml")
+    target_compile_options(test_dbus_xml_guard PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_dbus_xml_guard PRIVATE
+        gio-2.0 gobject-2.0 ${GLIB2_LIBRARIES} PkgConfig::POLKIT pthread
+    )
+
+    add_executable(test_mode_selector
+        tests/test_mode_selector.c
+        tests/golden_trace.c
+        src/mode_selector.c
+    )
+    target_include_directories(test_mode_selector PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(test_mode_selector PRIVATE
+        TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(test_mode_selector PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_mode_selector PRIVATE pthread)
+
     add_executable(test_config_file
         tests/test_config_file.c
         src/config_parser.c
         src/log.c
+        src/runtime_backend.c
     )
     target_include_directories(test_config_file PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
@@ -260,7 +335,75 @@ if(BUILD_TESTS)
     target_include_directories(test_frequency_state PRIVATE src/include)
     target_compile_options(test_frequency_state PRIVATE -Wall -Wextra -Werror)
     add_test(NAME frequency_state COMMAND test_frequency_state)
+
+    add_executable(test_runtime_backend
+        tests/test_runtime_backend.c
+        src/runtime_backend.c
+        src/sysfs_writer.c
+        src/log.c
+    )
+    target_include_directories(test_runtime_backend PRIVATE src/include)
+    target_compile_options(test_runtime_backend PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_runtime_backend PRIVATE pthread)
+    add_test(NAME runtime_backend COMMAND test_runtime_backend)
+
+    add_executable(test_frequency_recovery
+        tests/test_frequency_recovery.c
+        tests/golden_trace.c
+        src/frequency_recovery.c
+        src/frequency_state.c
+        src/runtime_backend.c
+        src/sysfs_writer.c
+        src/log.c
+    )
+    target_include_directories(test_frequency_recovery PRIVATE src/include)
+    target_include_directories(test_frequency_recovery PRIVATE tests)
+    target_compile_definitions(test_frequency_recovery PRIVATE
+        TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(test_frequency_recovery PRIVATE -Wall -Wextra -Werror)
+    target_link_libraries(test_frequency_recovery PRIVATE pthread)
+    add_test(NAME frequency_recovery COMMAND test_frequency_recovery)
+
+    add_executable(test_frequency_state_corruption
+        tests/test_frequency_state_corruption.c
+        src/frequency_recovery.c
+        src/frequency_state.c
+        src/runtime_backend.c
+        src/sysfs_writer.c
+        src/log.c
+    )
+    target_include_directories(test_frequency_state_corruption PRIVATE src/include)
+    target_compile_options(test_frequency_state_corruption PRIVATE
+        -Wall -Wextra -Werror)
+    add_test(NAME frequency_state_corruption
+        COMMAND test_frequency_state_corruption)
+
+    add_executable(test_daemon_recovery
+        tests/test_daemon_recovery.c
+        tests/golden_trace.c
+        src/frequency_state.c
+    )
+    add_dependencies(test_daemon_recovery uperf-linux-test-runtime)
+    target_include_directories(test_daemon_recovery PRIVATE
+        src/include tests)
+    target_compile_definitions(test_daemon_recovery PRIVATE
+        TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        TEST_DAEMON_PATH="$<TARGET_FILE:uperf-linux-test-runtime>")
+    target_compile_options(test_daemon_recovery PRIVATE
+        -Wall -Wextra -Werror)
+    add_test(NAME daemon_frequency_recovery COMMAND test_daemon_recovery)
+    set_tests_properties(daemon_frequency_recovery PROPERTIES TIMEOUT 15)
+
+    add_executable(test_daemon_reload tests/test_daemon_reload.c)
+    add_dependencies(test_daemon_reload uperf-linux-test-runtime)
+    target_include_directories(test_daemon_reload PRIVATE src/include tests)
+    target_compile_definitions(test_daemon_reload PRIVATE
+        TEST_DAEMON_PATH="$<TARGET_FILE:uperf-linux-test-runtime>")
+    target_compile_options(test_daemon_reload PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME daemon_reload COMMAND test_daemon_reload)
+    set_tests_properties(daemon_reload PROPERTIES TIMEOUT 15)
     add_test(NAME sysfs_writer COMMAND test_sysfs_writer)
+    add_test(NAME sysfs_fault_injection COMMAND test_sysfs_fault_injection)
     add_test(NAME game_scanner COMMAND test_game_scanner)
     add_test(NAME perapp_config COMMAND test_perapp_config)
     add_test(NAME thermal COMMAND test_thermal)
@@ -272,6 +415,8 @@ if(BUILD_TESTS)
         set_tests_properties(cgroup_manager PROPERTIES SKIP_RETURN_CODE 77)
     endif()
     add_test(NAME dbus_interface COMMAND test_dbus_interface)
+    add_test(NAME dbus_xml_guard COMMAND test_dbus_xml_guard)
+    add_test(NAME mode_selector COMMAND test_mode_selector)
     add_test(NAME wizard_detect COMMAND uperf-wizard detect --output
         ${CMAKE_CURRENT_BINARY_DIR}/wizard-detected.json)
     add_test(NAME wizard_config COMMAND test_config_file

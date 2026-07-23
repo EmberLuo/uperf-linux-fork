@@ -1,0 +1,3 @@
+after_sigkill=500,700
+after_restart=300,900
+snapshot=cleared

@@ -1,219 +1,217 @@
 # uperf-linux
 
-> Linux ARM64 设备的用户态性能调度器，专为游戏优化。
+> 面向 Linux ARM64 游戏设备的用户态性能调度器。
 
-## 概述
+[English README](README.md) | [许可证](LICENSE) | [GitHub](https://github.com/EmberLuo/uperf-linux-fork)
 
-`uperf-linux` 是一个由 systemd 管理的守护进程，附带 GTK4/libadwaita 图形界面，为 Linux ARM64 游戏设备提供精细的 CPU/GPU 调度。采用 JSON 驱动的配置文件、场景化状态机、触摸感知调速和功耗模型优化。
+## 概览
 
-- **JSON 配置驱动** — 直接写入 sysfs 节点（cpufreq、devfreq、uClamp）
-- **场景化状态机** — idle → touch → trigger → gesture → junk → switch → boost
-- **触摸感知调速** — 从触摸屏读取滑动/手势事件，即时提升性能
-- **功耗模型** — 基于 P-F 曲线寻找每个簇的"甜点频率"
-- **重载检测** — 持续高负载时自动切换到激进调度策略
-- **任务亲和性管理** — 通过 cgroup v2 将游戏线程绑定到性能核心
+`uperf-linux` 是一个由 systemd 管理的守护进程。它读取 JSON 配置，跟踪场景、负载、温度和进程状态，然后通过标准 Linux 接口应用自动 CPU 频率限制、手动 CPU/GPU 频率覆盖、线程调度策略和 cgroup 资源分类。
 
-## 架构
+当前代码的主要运行约束是：
+
+- CPU cpufreq policy 从 `/sys/devices/system/cpu/cpufreq` 自动发现，并用每个 policy 的 `related_cpus` 和配置里的 CPU mask 精确匹配。
+- GPU 频率目标使用配置中的 `gpuMinFreq` 和 `gpuMaxFreq` devfreq 路径，用于手动覆盖和恢复处理。
+- 电源模式选择以前台为优先：当前活动游戏可以覆盖用户的基础模式；没有前台匹配时按确定性优先级回退。
+- 频率写入会先对齐真实 OPP，再写入并读回验证；干净退出、配置重载和崩溃恢复都会尝试恢复原始频率限制。
+- 进程/线程调度会周期性从 `/proc` 重新对账，按配置应用亲和性、调度优先级和 cgroup class。
+- 控制接口暴露在 system bus 的 `org.uperflinux.Daemon` 上，修改类方法由 Polkit 授权。
+
+## 运行流程
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    systemd (PID 1)                           │
-│  uperf-linux.service  (After=multi-user.target)              │
-└──────────────────────────┬───────────────────────────────────┘
-                           │
-                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    uperf-linux 守护进程 (root)                 │
-│                                                              │
-│  ConfigParser ←→ JSON 配置（inotify 热重载）                 │
-│  InputMonitor ←→ /dev/input/event*（evdev, epoll）           │
-│  StateEngine  ←→ FSM 状态机（timerfd 超时）                  │
-│  SysfsWriter  ←→ 批量去重写入 sysfs                          │
-│  CgroupMgr    ←→ cgroup v2 切片 + uClamp                     │
-│  HeavyLoad    ←→ /proc/stat 轮询                             │
-│  GameScanner  ←→ /proc/*/comm + /proc/*/cmdline 匹配         │
-│  DBusManager  ←→ org.uperflinux.Daemon（system bus）         │
-└──────────────────────────────────────────────────────────────┘
+systemd Type=dbus service
+        |
+        v
+uperf-linux daemon
+  |
+  +-- ConfigParser      JSON 加载、验证、SIGHUP/D-Bus 重载
+  +-- RuntimeBackend    可注入的 /proc、/sys、单调时钟访问层
+  +-- InputMonitor      触摸屏 evdev 事件
+  +-- HeavyLoadDetector /proc/stat 负载采样
+  +-- ThermalManager    /sys/class/thermal 温度状态
+  +-- GameScanner       /proc 进程发现和按应用模式查询
+  +-- ModeSelector      用户请求模式 + 前台游戏覆盖
+  +-- StateMachine      idle/touch/trigger/gesture/junk/switch/boost 动作
+  +-- FreqController    负载需求 -> 频率上下限 -> OPP 对齐 -> sysfs 写入
+  +-- TaskScheduler     进程/线程亲和性和调度属性
+  +-- CgroupManager     systemd/cgroup 资源 class 对账
+  +-- DbusManager       CLI/GUI API、状态上报、Polkit 授权
 ```
 
-## GUI（GTK4/libadwaita）
+启动时，守护进程会加载并验证配置，恢复上一次进程可能留下的频率状态，发现 CPU/GPU 目标，创建各个检测器和管理器，然后发布初始 `balance` 模式。主循环负责处理 D-Bus、配置重载、负载采样、输入事件、温度状态、场景/模式重算、自动频率控制、游戏扫描和调度/cgroup 对账。
 
-平板友好的 GTK4/libadwaita 图形控制器，通过 **DBus** 与守护进程双向通信：
+## 可执行程序
 
-```bash
-# 启动 GUI
-uperf-gui
-```
-
-### 功能
-- **仪表盘** — 电源模式按钮、实时 CPU 频率显示、负载仪表、场景指示器
-- **游戏列表** — 已检测到的游戏进程，支持按应用分配模式
-- **设置** — 阈值输入（HeavyLoad 阈值、采样时间、余量、突发强度、功耗预算、热管理）
-- **日志** — 守护进程实时日志查看器
-- **频率覆盖** — 手动锁定 CPU/GPU 频率
-
-### DBus 接口
-守护进程在 system bus 上暴露 `org.uperflinux.Daemon`：
-```bash
-# 查询当前模式
-dbus-send --system --dest=org.uperflinux.Daemon --print-reply \
-  /org/uperflinux/Daemon org.freedesktop.DBus.Properties.Get \
-  string:'org.uperflinux.Daemon' string:'CurrentMode'
-
-# 切换模式
-dbus-send --system --dest=org.uperflinux.Daemon --print-reply \
-  /org/uperflinux/Daemon org.uperflinux.Daemon.SetMode string:'performance'
-```
+- `uperf-linux`：root 守护进程，通常由 systemd 启动。
+- `uperfctl`：命令行客户端，用于查看状态、切换模式、选择活动 PID、手动频率覆盖和硬件检测。
+- `uperf-wizard`：硬件配置探测器。
+- `uperf-gui`：GTK4/libadwaita 图形控制器。
 
 ## 支持平台
 
-| 平台 | SoC | cpufreq 驱动 | devfreq | 状态 |
-|------|-----|-------------|---------|------|
-| 小米平板 6S Pro | SM8550 (骁龙 8 Gen 2) | cpufreq-dt | msm_dvfs | ✅ 主要目标 |
-| 其他骁龙平台 | 各种型号 | cpufreq-dt | 视情况而定 | ⚠️ 需要配置 |
+仓库自带的配置面向 SM8550 设备，例如小米平板 6S Pro：
 
-## 快速开始
+| 项目 | 当前要求 |
+| --- | --- |
+| CPU | 三个 cpufreq policy，分别匹配 efficiency、performance、prime 的 CPU mask |
+| GPU | `/sys/class/devfreq/3d00000.gpu` devfreq 节点 |
+| Governor | 预期使用 `schedutil`；守护进程调 min/max 限制，不替换 governor |
+| Cgroups | systemd 管理的 cgroup v2 |
+| 输入 | Linux evdev 触摸屏设备 |
 
-### 前置依赖
+其他 ARM64 设备需要提供匹配的 JSON 配置。如果检测到的 CPU 拓扑和 power model 不一致，自动 CPU 频率控制会被关闭，不会猜测写入。
+
+## 构建
+
+### 依赖
+
+Debian/Ubuntu:
 
 ```bash
-# Debian/Ubuntu
-sudo apt install cmake pkg-config libjson-c-dev libglib2.0-dev libsystemd-dev \
-    libgtk-4-dev libadwaita-1-dev
-
-# Arch Linux
-sudo pacman -S cmake json-c systemd-libs glib2 gtk4 libadwaita
-
-# Fedora
-sudo dnf install cmake pkg-config json-c-devel glib2-devel systemd-devel \
-    gtk4-devel libadwaita-devel
+sudo apt install build-essential cmake pkg-config libjson-c-dev \
+    libglib2.0-dev libdbus-1-dev libpolkit-gobject-1-dev libsystemd-dev \
+    libgtk-4-dev libadwaita-1-dev desktop-file-utils
 ```
 
-### 编译
+只构建守护进程和 CLI：
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF
+cmake --build build -j "$(nproc)"
+ctest --test-dir build --output-on-failure
 ```
 
-### 安装
+包含 GUI 的完整构建：
 
 ```bash
-# 以 root 身份执行
-sudo cp uperf-linux /usr/local/bin/
-sudo cp uperfctl /usr/local/bin/
-sudo mkdir -p /etc/uperf-linux
-sudo cp ../config/sm8550.json /etc/uperf-linux/config.json
-sudo cp ../config/perapp_powermode /etc/uperf-linux/
-sudo mkdir -p /run/uperf-linux
-sudo cp ../systemd/uperf-linux.service /etc/systemd/system/
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j "$(nproc)"
+ctest --test-dir build --output-on-failure
+```
+
+## 安装
+
+从 CMake 构建目录安装：
+
+```bash
+sudo cmake --install build
 sudo systemctl daemon-reload
 sudo systemctl enable --now uperf-linux.service
-
-# GUI
-sudo cp uperf-gui /usr/local/bin/
-sudo desktop-file-install gui/uperf-gui.desktop
 ```
 
-### 从 deb 安装
+构建并安装 Debian 包：
 
 ```bash
-sudo dpkg -i uperf-linux-gui_0.1.0_arm64.deb
-sudo systemctl enable --now uperf-linux
+cmake --build build --target package
+sudo dpkg -i build/uperf-linux-0.1.0-arm64.deb
+sudo systemctl enable --now uperf-linux.service
 ```
 
-### 命令行用法
+安装后的守护进程读取 `/etc/uperf-linux/config.json` 和 `/etc/uperf-linux/perapp_powermode`。
+
+## 命令行
 
 ```bash
-# 查看状态
-sudo uperfctl status
-
-# 切换电源模式
-sudo uperfctl mode performance    # 全速模式
-sudo uperfctl mode balance        # 均衡模式（默认）
-sudo uperfctl mode powersave      # 省电模式
-
-# 列出检测到的游戏进程
-sudo uperfctl game-list
-
-# 查看日志
-journalctl -u uperf-linux -f
+uperfctl status
+uperfctl mode balance
+uperfctl mode powersave
+uperfctl mode performance
+uperfctl game-list
+uperfctl active-pid <pid|0>
+uperfctl set-freq <cluster> <freq_hz>
+uperfctl show-freqs
+uperfctl detect
 ```
 
-## 配置文件
+`set-freq` 中，cluster `-1` 表示 GPU，`0..2` 表示当前配置里的 CPU 簇，`3` 表示所有 CPU 簇。频率填 `0` 会释放手动覆盖。
 
-主配置文件位于 `/etc/uperf-linux/config.json`。关键配置段：
+`uperfctl` 的退出码是稳定接口：`0` 成功，`1` 用法错误，`2` 客户端参数非法，`3` 守护进程不可用，`4` 守护进程拒绝请求。
 
-### 功耗模型 (Power Model)
+## 配置
 
-定义每个 CPU 簇的性能特征：
+默认配置是 `config/sm8550.json`，安装后的运行配置是 `/etc/uperf-linux/config.json`。
 
-```json
-"powerModel": [
-  {
-    "efficiency": 350,        /* 相对 IPC 分数（Cortex-A53@1GHz = 100）*/
-    "nr": 1,                  /* 该簇的核心数量 */
-    "typicalPower": 1.2,      /* 典型频率下单核功耗（瓦）*/
-    "typicalFreq": 2400,      /* 正常工作频率（MHz）*/
-    "sweetFreq": 1800,        /* 能效最佳频率（MHz）*/
-    "plainFreq": 1400,        /* 线性区域边界（MHz）*/
-    "freeFreq": 600           /* 最低有效频率（MHz）*/
-  }
-]
-```
+### Schema
 
-### Sysfs 节点
+`meta.schemaVersion` 可选。缺失时按 legacy schema `0` 处理；高于当前 `CONFIG_SCHEMA_VERSION` 的配置会被拒绝加载。
 
-将节点名称映射到 sysfs 路径。`%d` 会按 CPU 编号展开：
+### CPU Power Model
+
+每个 CPU 簇当前识别这些字段：
 
 ```json
-"knob": {
-  "cpufreqMax": "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq",
-  "gpuMaxFreq": "/sys/class/devfreq/soc\\:qcom\\:gpu/max_freq"
+{
+  "efficiency": 350,
+  "nr": 1,
+  "cpumask": "prime",
+  "typicalFreq": 2957,
+  "sweetFreq": 2218,
+  "freeFreq": 739
 }
 ```
 
-### 预设 (Presets)
+可以用 `cpumask` 引用 `modules.sched.cpumask` 中的命名 CPU mask，也可以直接写 `cpus` 数组。当前 power model 是“相对需求到目标频率”的线性性能近似，不做功耗预算。`sweetFreq` 只在 preset 开启 `cpu.limitEfficiency` 时作为频率上限使用。
 
-三种电源模式，每种包含逐场景覆盖：
+### Sysfs
+
+CPU cpufreq 路径会自动发现。`modules.sysfs.knob` 当前用于 GPU 频率路径：
+
+```json
+"knob": {
+  "gpuMaxFreq": "/sys/class/devfreq/3d00000.gpu/max_freq",
+  "gpuMinFreq": "/sys/class/devfreq/3d00000.gpu/min_freq"
+}
+```
+
+### Presets
+
+preset 当前会读取这些运行时调参：
+
+- `cpu.margin`
+- `cpu.burst`
+- `cpu.limitEfficiency`
+- `cpu.baseSampleTime`
+
+示例：
 
 ```json
 "presets": {
   "balance": {
     "*": { "cpu.margin": 0.2 },
-    "idle": { "cpu.baseSampleTime": 0.04 },
-    "touch": { "cpu.margin": 0.4 }
+    "idle": {
+      "cpu.baseSampleTime": 0.04,
+      "cpu.limitEfficiency": true
+    },
+    "trigger": { "cpu.margin": 0.4 }
   }
 }
 ```
 
+### 调度和 cgroup
+
+`modules.sched` 定义 CPU mask、亲和性 profile、优先级 profile，以及进程/线程匹配规则。`modules.cgroup` 把匹配到的 workload 映射到 cgroup class，设置 CPU mask、`cpu.weight` 和 uclamp 限制。守护进程会周期性根据活跃进程重新对账，并在 workload 不再受管理时恢复原始线程策略。
+
+## 测试
+
+CMake 测试覆盖配置解析、模式选择、状态机转换、频率限制计算、恢复快照、sysfs 故障注入、守护进程重载/恢复、D-Bus 接口漂移、调度规则、cgroup 对账和硬件探测辅助逻辑。
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+硬件验证脚本：
+
+```bash
+tools/validate-frequency-hardware.sh
+```
+
+写入读回验证会临时改变 CPU/GPU 频率上下限，只应在你确认硬件状态允许时运行。
+
+## 设计契约
+
+需要在后续重构中保留的行为记录在 [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md)。
+
 ## 许可证
 
-本项目采用 **GNU GPL v3** 许可证。详见 [LICENSE](LICENSE) 文件。
-
-允许自由使用、修改和分发，但衍生作品也必须以相同的许可证开源。
-
-## 开发路线图
-
-- [x] 项目脚手架 + CMake 构建系统
-- [x] 日志子系统（journald + 文件 + 标准错误输出）
-- [x] JSON 配置解析器（含验证 + 热重载）
-- [x] Sysfs 写入器（批量写入 + 去重）
-- [x] 功耗模型（P-F 曲线、甜点频率选择）
-- [x] 状态机（7 种场景、基于 timerfd 的转换）
-- [x] 输入监控（evdev 触摸事件解析）
-- [x] cgroup v2 管理器（切片、uClamp、CPU 亲和绑定）
-- [x] 重载检测（/proc/stat 轮询）
-- [x] 游戏进程扫描器（/proc 扫描）
-- [x] SM8550 默认配置
-- [x] CLI 工具（uperfctl）
-- [x] systemd 服务单元
-- [x] DBus 接口（org.uperflinux.Daemon）
-- [x] GTK4/libadwaita GUI（仪表盘、游戏列表、设置、日志、频率覆盖）
-- [x] deb 打包（dpkg-deb）
-- [x] 单元测试（扩展覆盖率）
-- [x] 热管理（读取 /sys/class/thermal/，频率限制，DBus 暴露）
-- [x] 按应用电源模式自动切换（perapp_powermode 解析器，游戏扫描器集成，GUI 接线）
-- [x] SoC 配置向导（uperf-wizard detect，uperfctl detect）
-- [x] 手动 CPU/GPU 频率覆盖（CLI + GUI + DBus）
+本项目使用 GPL-3.0-or-later。详见 [LICENSE](LICENSE)。

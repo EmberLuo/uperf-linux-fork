@@ -302,15 +302,12 @@ static void test_crash_recovery(void) {
 }
 
 static void test_affinity_failure_is_reported(void) {
-    uint64_t allowed = current_affinity_mask();
-    int unavailable_cpu = -1;
-    for (int cpu = 0; cpu < MAX_CPUS; cpu++) {
-        if ((allowed & (UINT64_C(1) << cpu)) == 0) {
-            unavailable_cpu = cpu;
-            break;
-        }
-    }
-    if (unavailable_cpu < 0) return;
+    /* A CPU absent from the process's current affinity mask may still be valid
+     * and sched_setaffinity() is allowed to expand into it.  Select a CPU past
+     * the kernel's configured CPU count so failure is deterministic. */
+    long configured = sysconf(_SC_NPROCESSORS_CONF);
+    if (configured < 1 || configured >= MAX_CPUS) return;
+    int unavailable_cpu = (int)configured;
 
     Config config;
     init_test_config(&config, false, "/MAIN_THREAD/");
@@ -350,6 +347,24 @@ static void test_active_game_identity_uses_start_time(void) {
     assert(task_scheduler_update(scheduler, &game, 1, SCENE_IDLE) == 0);
     assert(task_scheduler_get_active_pid(scheduler) == getpid());
     assert(task_scheduler_tracked_processes(scheduler) == 1);
+    task_scheduler_free(scheduler);
+}
+
+static void test_active_identity_updates_when_scheduling_disabled(void) {
+    Config config;
+    memset(&config, 0, sizeof(config));
+    config.sched.enable = false;
+    TaskScheduler *scheduler = task_scheduler_new(&config, NULL);
+    assert(scheduler != NULL);
+    uint64_t start_time = process_start_time(getpid());
+    assert(start_time != 0);
+    assert(task_scheduler_set_active_pid(scheduler, getpid()) == 0);
+    assert(task_scheduler_update(scheduler, NULL, 0, SCENE_IDLE) == 0);
+    pid_t active_pid = 0;
+    uint64_t active_start = 0;
+    assert(task_scheduler_get_active_identity(scheduler, &active_pid,
+                                              &active_start));
+    assert(active_pid == getpid() && active_start == start_time);
     task_scheduler_free(scheduler);
 }
 
@@ -452,6 +467,7 @@ int main(void) {
     test_crash_recovery();
     test_affinity_failure_is_reported();
     test_active_game_identity_uses_start_time();
+    test_active_identity_updates_when_scheduling_disabled();
     test_new_threads_are_persisted_once();
     test_invalid_recovery_attributes_are_rejected();
     log_shutdown();

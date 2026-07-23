@@ -1,6 +1,7 @@
 #include "config.h"
 #include "log.h"
 #include "state_machine.h"
+#include "runtime_backend.h"
 
 #include <json-c/json.h>
 #include <json-c/json_util.h>
@@ -8,7 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <sys/stat.h>
+#include <math.h>
+#include <limits.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <regex.h>
@@ -22,13 +24,22 @@ static int parse_int_field(struct json_object *obj, const char *field, int *out)
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
         return -1;
-    *out = (int)json_object_get_int(jo);
+    if (!json_object_is_type(jo, json_type_int)) return -1;
+    int64_t value = json_object_get_int64(jo);
+    if (value < INT_MIN || value > INT_MAX) return -1;
+    *out = (int)value;
     return 0;
 }
 
 static int parse_double_field(struct json_object *obj, const char *field, double *out) {
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
+        return -1;
+    /* Treat a wrong JSON type like a missing field rather than silently
+     * coercing (json-c would turn a string into 0.0). Optional callers keep
+     * their default; required callers already treat -1 as a fatal error. */
+    enum json_type t = json_object_get_type(jo);
+    if (t != json_type_int && t != json_type_double)
         return -1;
     *out = json_object_get_double(jo);
     return 0;
@@ -47,6 +58,7 @@ static int parse_string_field(struct json_object *obj, const char *field, const 
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
         return -1;
+    if (!json_object_is_type(jo, json_type_string)) return -1;
     *out = json_object_get_string(jo);
     return 0;
 }
@@ -55,6 +67,10 @@ static bool parse_bool_field(struct json_object *obj, const char *field, bool de
     struct json_object *jo;
     if (!json_object_object_get_ex(obj, field, &jo))
         return def;
+    if (!json_object_is_type(jo, json_type_boolean)) {
+        log_warn("Config key '%s' needs a boolean; using default", field);
+        return def;
+    }
     return json_object_get_boolean(jo);
 }
 
@@ -140,21 +156,16 @@ static int parse_power_model(struct json_object *mod_obj, Config *cfg) {
             snprintf(pm->cpumask_name, sizeof(pm->cpumask_name), "%s",
                      cpumask_name);
         }
-        if (parse_float_field(entry, "typicalPower", &pm->typical_power_w) < 0)
-            pm->typical_power_w = 1.0f;
         if (parse_float_field(entry, "typicalFreq", &pm->typical_freq_mhz) < 0)
             pm->typical_freq_mhz = 1000.0f;
         if (parse_float_field(entry, "sweetFreq", &pm->sweet_freq_mhz) < 0)
             pm->sweet_freq_mhz = pm->typical_freq_mhz * 0.7f;
-        if (parse_float_field(entry, "plainFreq", &pm->plain_freq_mhz) < 0)
-            pm->plain_freq_mhz = pm->typical_freq_mhz * 0.5f;
         if (parse_float_field(entry, "freeFreq", &pm->free_freq_mhz) < 0)
             pm->free_freq_mhz = pm->typical_freq_mhz * 0.25f;
 
-        log_debug("powerModel[%d]: eff=%d nr=%d typP=%.1fW typF=%.0fMHz sweet=%.0f plain=%.0f free=%.0f",
+        log_debug("powerModel[%d]: eff=%d nr=%d typF=%.0fMHz sweet=%.0f free=%.0f",
                    i, pm->efficiency, pm->nr_cores,
-                   pm->typical_power_w, pm->typical_freq_mhz,
-                   pm->sweet_freq_mhz, pm->plain_freq_mhz, pm->free_freq_mhz);
+                   pm->typical_freq_mhz, pm->sweet_freq_mhz, pm->free_freq_mhz);
     }
     return 0;
 }
@@ -167,46 +178,46 @@ static int parse_action_params(struct json_object *obj, ActionParams *ap) {
     memset(ap, 0, sizeof(*ap));
 
     json_object_object_foreach(obj, k, v) {
-        if (strncmp(k, "cpu.", 4) != 0)
+        if (strncmp(k, "cpu.", 4) != 0) {
+            log_warn("Unknown preset key '%s' ignored", k);
             continue;
+        }
         const char *sub = k + 4;
-        double d = json_object_get_double(v);
-        if (strcmp(sub, "latencyTime") == 0) {
-            ap->latency_time = (float)d;
-            ap->tuning_present |= ACTION_TUNE_LATENCY_TIME;
-        } else if (strcmp(sub, "slowLimitPower") == 0) {
-            ap->slow_limit_power = (float)d;
-            ap->tuning_present |= ACTION_TUNE_SLOW_LIMIT_POWER;
-        } else if (strcmp(sub, "fastLimitPower") == 0) {
-            ap->fast_limit_power = (float)d;
-            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_POWER;
-        } else if (strcmp(sub, "fastLimitCapacity") == 0) {
-            ap->fast_limit_capacity = (float)d;
-            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_CAPACITY;
-        } else if (strcmp(sub, "fastLimitRecoverScale") == 0) {
-            ap->fast_limit_recover_scale = (float)d;
-            ap->tuning_present |= ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE;
-        } else if (strcmp(sub, "margin") == 0) {
+        enum json_type type = json_object_get_type(v);
+        bool numeric = type == json_type_int || type == json_type_double;
+        if (strcmp(sub, "margin") == 0) {
+            if (!numeric) {
+                log_warn("Preset key '%s' needs a number; ignored", k);
+                continue;
+            }
+            double d = json_object_get_double(v);
             ap->margin = (float)d;
             ap->tuning_present |= ACTION_TUNE_MARGIN;
         } else if (strcmp(sub, "burst") == 0) {
+            if (!numeric) {
+                log_warn("Preset key '%s' needs a number; ignored", k);
+                continue;
+            }
+            double d = json_object_get_double(v);
             ap->burst = (float)d;
             ap->tuning_present |= ACTION_TUNE_BURST;
-        } else if (strcmp(sub, "guideCap") == 0) {
-            ap->guide_cap = json_object_get_boolean(v);
-            ap->tuning_present |= ACTION_TUNE_GUIDE_CAP;
         } else if (strcmp(sub, "limitEfficiency") == 0) {
+            if (type != json_type_boolean) {
+                log_warn("Preset key '%s' needs a boolean; ignored", k);
+                continue;
+            }
             ap->limit_efficiency = json_object_get_boolean(v);
             ap->tuning_present |= ACTION_TUNE_LIMIT_EFFICIENCY;
         } else if (strcmp(sub, "baseSampleTime") == 0) {
+            if (!numeric) {
+                log_warn("Preset key '%s' needs a number; ignored", k);
+                continue;
+            }
+            double d = json_object_get_double(v);
             ap->base_sample_time = (float)d;
             ap->tuning_present |= ACTION_TUNE_BASE_SAMPLE_TIME;
-        } else if (strcmp(sub, "baseSlackTime") == 0) {
-            ap->base_slack_time = (float)d;
-            ap->tuning_present |= ACTION_TUNE_BASE_SLACK_TIME;
-        } else if (strcmp(sub, "predictThd") == 0) {
-            ap->predict_thd = (float)d;
-            ap->tuning_present |= ACTION_TUNE_PREDICT_THD;
+        } else {
+            log_warn("Unknown or deprecated preset key '%s' ignored", k);
         }
     }
     return 0;
@@ -217,6 +228,10 @@ static int parse_action_params(struct json_object *obj, ActionParams *ap) {
  * ---------------------------------------------------------------- */
 
 static int parse_sysfs_knobs(struct json_object *mod_obj, Config *cfg) {
+    struct json_object *deprecated_enable = NULL;
+    if (json_object_object_get_ex(mod_obj, "enable", &deprecated_enable))
+        log_warn("Deprecated config key 'modules.sysfs.enable' ignored; "
+                 "remove it and declare only the GPU paths in use");
     struct json_object *knobs_obj;
     if (!json_object_object_get_ex(mod_obj, "knob", &knobs_obj)) {
         log_warn("sysfs module: no 'knob' object found");
@@ -225,6 +240,16 @@ static int parse_sysfs_knobs(struct json_object *mod_obj, Config *cfg) {
 
     int idx = 0;
     json_object_object_foreach(knobs_obj, k, v) {
+        if (strcmp(k, "gpuMinFreq") != 0 &&
+            strcmp(k, "gpuMaxFreq") != 0) {
+            log_warn("Unsupported sysfs knob '%s' ignored; CPU policies are "
+                     "discovered automatically", k);
+            continue;
+        }
+        if (!json_object_is_type(v, json_type_string)) {
+            log_warn("Sysfs knob '%s' needs a string path; ignored", k);
+            continue;
+        }
         if (idx >= MAX_KNOBS) {
             log_warn("sysfs: too many knobs (max %d), truncating", MAX_KNOBS);
             break;
@@ -234,7 +259,6 @@ static int parse_sysfs_knobs(struct json_object *mod_obj, Config *cfg) {
         knob->name[MAX_NAME_LEN - 1] = '\0';
         strncpy(knob->path, json_object_get_string(v), MAX_PATH_LEN - 1);
         knob->path[MAX_PATH_LEN - 1] = '\0';
-        knob->enabled = true;
         idx++;
         log_debug("sysfs knob[%d]: %s = %s", idx - 1, knob->name, knob->path);
     }
@@ -728,18 +752,10 @@ static int parse_presets(struct json_object *cfg_obj, Config *out) {
  * ---------------------------------------------------------------- */
 
 static int parse_initials(struct json_object *cfg_obj, Config *out) {
-    out->initial_latency_time       = 0.2f;
-    out->initial_slow_limit_power   = 3.0f;
-    out->initial_fast_limit_power   = 6.0f;
-    out->initial_fast_limit_capacity = 10.0f;
-    out->initial_fast_limit_recover_scale = 0.3f;
     out->initial_margin             = 0.25f;
     out->initial_burst              = 0.0f;
-    out->initial_guide_cap          = false;
     out->initial_limit_efficiency   = false;
     out->initial_base_sample_time   = 0.01f;
-    out->initial_base_slack_time    = 0.01f;
-    out->initial_predict_thd        = 0.3f;
 
     struct json_object *initials_obj;
     if (!json_object_object_get_ex(cfg_obj, "initials", &initials_obj))
@@ -748,19 +764,26 @@ static int parse_initials(struct json_object *cfg_obj, Config *out) {
     struct json_object *cpu_obj;
     if (json_object_object_get_ex(initials_obj, "cpu", &cpu_obj)) {
         json_object_object_foreach(cpu_obj, k, v) {
-            double d = json_object_get_double(v);
-            if (strcmp(k, "latencyTime") == 0)       out->initial_latency_time = (float)d;
-            else if (strcmp(k, "slowLimitPower") == 0) out->initial_slow_limit_power = (float)d;
-            else if (strcmp(k, "fastLimitPower") == 0) out->initial_fast_limit_power = (float)d;
-            else if (strcmp(k, "fastLimitCapacity") == 0) out->initial_fast_limit_capacity = (float)d;
-            else if (strcmp(k, "fastLimitRecoverScale") == 0) out->initial_fast_limit_recover_scale = (float)d;
-            else if (strcmp(k, "margin") == 0) out->initial_margin = (float)d;
-            else if (strcmp(k, "burst") == 0) out->initial_burst = (float)d;
-            else if (strcmp(k, "guideCap") == 0) out->initial_guide_cap = json_object_get_boolean(v);
-            else if (strcmp(k, "limitEfficiency") == 0) out->initial_limit_efficiency = json_object_get_boolean(v);
-            else if (strcmp(k, "baseSampleTime") == 0) out->initial_base_sample_time = (float)d;
-            else if (strcmp(k, "baseSlackTime") == 0) out->initial_base_slack_time = (float)d;
-            else if (strcmp(k, "predictThd") == 0) out->initial_predict_thd = (float)d;
+            enum json_type type = json_object_get_type(v);
+            bool numeric = type == json_type_int || type == json_type_double;
+            if (strcmp(k, "margin") == 0 && numeric)
+                out->initial_margin = (float)json_object_get_double(v);
+            else if (strcmp(k, "burst") == 0 && numeric)
+                out->initial_burst = (float)json_object_get_double(v);
+            else if (strcmp(k, "limitEfficiency") == 0 &&
+                     type == json_type_boolean)
+                out->initial_limit_efficiency = json_object_get_boolean(v);
+            else if (strcmp(k, "baseSampleTime") == 0 && numeric)
+                out->initial_base_sample_time =
+                    (float)json_object_get_double(v);
+            else if (strcmp(k, "margin") == 0 || strcmp(k, "burst") == 0 ||
+                     strcmp(k, "limitEfficiency") == 0 ||
+                     strcmp(k, "baseSampleTime") == 0)
+                log_warn("Initials key 'cpu.%s' has the wrong type; ignored",
+                         k);
+            else
+                log_warn("Unknown or deprecated initials key 'cpu.%s' "
+                         "ignored", k);
         }
     }
     return 0;
@@ -789,6 +812,26 @@ static int parse_meta(struct json_object *cfg_obj, Config *out) {
             strncpy(out->meta_author, author, MAX_NAME_LEN - 1);
     }
 
+    /* Optional schema version.  Absent means legacy (0).  A newer schema than
+     * this build understands is rejected here, at load time: continuing to
+     * parse fields whose meaning may have changed would silently misinterpret
+     * the config.  config_validate re-checks the range as defense in depth. */
+    struct json_object *ver_jo = NULL;
+    if (json_object_object_get_ex(meta_obj, "schemaVersion", &ver_jo)) {
+        if (!json_object_is_type(ver_jo, json_type_int)) {
+            log_error("meta.schemaVersion must be an integer");
+            return -1;
+        }
+        out->meta_schema_version = json_object_get_int(ver_jo);
+        if (out->meta_schema_version < 0 ||
+            out->meta_schema_version > CONFIG_SCHEMA_VERSION) {
+            log_error("Config schema version %d is unsupported "
+                      "(this build understands up to %d)",
+                      out->meta_schema_version, CONFIG_SCHEMA_VERSION);
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -805,10 +848,9 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
     if (json_object_object_get_ex(mod_obj, "switcher", &sw_obj)) {
         struct json_object *jo;
         const char *s;
-        if (json_object_object_get_ex(sw_obj, "switchInode", &jo)) {
-            s = json_object_get_string(jo);
-            if (s) strncpy(out->switcher.switch_inode, s, MAX_PATH_LEN - 1);
-        }
+        if (json_object_object_get_ex(sw_obj, "switchInode", &jo))
+            log_warn("Deprecated config key 'modules.switcher.switchInode' "
+                     "ignored; mode is controlled through D-Bus/per-app rules");
         if (json_object_object_get_ex(sw_obj, "perapp", &jo)) {
             s = json_object_get_string(jo);
             if (s) strncpy(out->switcher.perapp_file, s, MAX_PATH_LEN - 1);
@@ -835,7 +877,6 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
         out->input.gesture_thd_x = 0.03f;
         out->input.gesture_thd_y = 0.03f;
         out->input.gesture_delay_time = 2.0f;
-        out->input.hold_enter_time = 1.0f;
 
         struct json_object *jo;
         if (json_object_object_get_ex(inp_obj, "swipeThd", &jo))
@@ -847,7 +888,8 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
         if (json_object_object_get_ex(inp_obj, "gestureDelayTime", &jo))
             out->input.gesture_delay_time = json_object_get_double(jo);
         if (json_object_object_get_ex(inp_obj, "holdEnterTime", &jo))
-            out->input.hold_enter_time = json_object_get_double(jo);
+            log_warn("Deprecated config key 'modules.input.holdEnterTime' "
+                     "ignored; no runtime behavior consumes it");
         if (json_object_object_get_ex(inp_obj, "screen_width", &jo))
             out->input.screen_width = json_object_get_int(jo);
         if (json_object_object_get_ex(inp_obj, "screen_height", &jo))
@@ -874,6 +916,28 @@ static int parse_switcher(struct json_object *cfg_obj, Config *out) {
                         &out->thermal.recovery_temp);
     }
 
+    /* Heavy-load detector. Defaults match the historical hardcoded values so
+     * omitting the block preserves prior behavior. */
+    out->heavyload.enable = true;
+    out->heavyload.sample_time_ms = 10.0f;
+    out->heavyload.heavy_load_pct = 60.0f;
+    out->heavyload.idle_load_pct = 20.0f;
+    out->heavyload.burst_slack_ms = 3000.0f;
+    struct json_object *heavy_obj;
+    if (json_object_object_get_ex(mod_obj, "heavyload", &heavy_obj)) {
+        out->heavyload.enable = parse_bool_field(
+            heavy_obj, "enable",
+            parse_bool_field(heavy_obj, "enabled", true));
+        parse_float_field(heavy_obj, "sampleTimeMs",
+                          &out->heavyload.sample_time_ms);
+        parse_float_field(heavy_obj, "heavyLoadPct",
+                          &out->heavyload.heavy_load_pct);
+        parse_float_field(heavy_obj, "idleLoadPct",
+                          &out->heavyload.idle_load_pct);
+        parse_float_field(heavy_obj, "burstSlackMs",
+                          &out->heavyload.burst_slack_ms);
+    }
+
     return 0;
 }
 
@@ -893,7 +957,6 @@ int config_load(Config *cfg, const char *path) {
     cfg->switcher.hint_duration[SCENE_SWITCH]    = 0.4f;
     cfg->switcher.hint_duration[SCENE_BOOST]     = 0.0f;
 
-    strncpy(cfg->switcher.switch_inode, "/run/uperf-linux/cur_powermode", MAX_PATH_LEN - 1);
     strncpy(cfg->switcher.perapp_file, "/etc/uperf-linux/perapp_powermode", MAX_PATH_LEN - 1);
 
     strncpy(cfg->meta_name, "unknown", MAX_NAME_LEN - 1);
@@ -926,7 +989,8 @@ int config_load(Config *cfg, const char *path) {
     }
 
     cfg->cpu.enable = parse_bool_field(cpu_obj, "enable", true);
-    cfg->sysfs.enable = parse_bool_field(sysfs_obj, "enable", true);
+    /* sysfs has no module-level enable; only declared, supported paths exist
+     * in the runtime configuration. */
 
     /* Walk the top-level structure. */
     if (parse_meta(root, cfg) < 0)               goto err;
@@ -971,6 +1035,17 @@ int config_validate(const Config *cfg) {
         return -1;
     }
 
+    /* Reject a schema this build cannot interpret.  A negative version is
+     * malformed; a version newer than we support means the file was written for
+     * a later daemon.  Version 0 (absent) is accepted as legacy. */
+    if (cfg->meta_schema_version < 0 ||
+        cfg->meta_schema_version > CONFIG_SCHEMA_VERSION) {
+        log_error("Validation failed: config schema version %d is unsupported "
+                  "(this build supports 0..%d)",
+                  cfg->meta_schema_version, CONFIG_SCHEMA_VERSION);
+        return -1;
+    }
+
     if (cfg->cpu.nr_clusters <= 0 || cfg->cpu.nr_clusters > MAX_CLUSTERS) {
         log_error("Validation failed: cluster count must be between 1 and %d",
                   MAX_CLUSTERS);
@@ -998,16 +1073,11 @@ int config_validate(const Config *cfg) {
             log_error("Validation failed: cluster %d efficiency must be > 0", i);
             return -1;
         }
-        if (pm->typical_power_w <= 0.0f) {
-            log_error("Validation failed: cluster %d typicalPower must be > 0", i);
-            return -1;
-        }
         if (pm->free_freq_mhz <= 0.0f ||
-            pm->free_freq_mhz >= pm->plain_freq_mhz ||
-            pm->plain_freq_mhz >= pm->sweet_freq_mhz ||
+            pm->free_freq_mhz >= pm->sweet_freq_mhz ||
             pm->sweet_freq_mhz > pm->typical_freq_mhz) {
             log_error("Validation failed: cluster %d frequencies must satisfy "
-                      "0 < freeFreq < plainFreq < sweetFreq <= typicalFreq", i);
+                      "0 < freeFreq < sweetFreq <= typicalFreq", i);
             return -1;
         }
     }
@@ -1044,6 +1114,33 @@ int config_validate(const Config *cfg) {
         return -1;
     }
 
+    if (cfg->heavyload.enable) {
+        const HeavyLoadConfig *hl = &cfg->heavyload;
+        if (!isfinite(hl->sample_time_ms) || !isfinite(hl->heavy_load_pct) ||
+            !isfinite(hl->idle_load_pct) || !isfinite(hl->burst_slack_ms)) {
+            log_error("Validation failed: heavyload params must be finite "
+                      "(no NaN/Inf)");
+            return -1;
+        }
+        if (hl->sample_time_ms < 1.0f || hl->sample_time_ms > 1000.0f) {
+            log_error("Validation failed: heavyload sampleTimeMs must be in "
+                      "[1, 1000]");
+            return -1;
+        }
+        if (hl->idle_load_pct < 0.0f ||
+            hl->idle_load_pct >= hl->heavy_load_pct ||
+            hl->heavy_load_pct > 100.0f) {
+            log_error("Validation failed: heavyload needs "
+                      "0 <= idleLoadPct < heavyLoadPct <= 100");
+            return -1;
+        }
+        if (hl->burst_slack_ms < 0.0f || hl->burst_slack_ms > 60000.0f) {
+            log_error("Validation failed: heavyload burstSlackMs must be in "
+                      "[0, 60000]");
+            return -1;
+        }
+    }
+
     if (cfg->cgroup.enable) {
         if (!cfg->sched.enable) {
             log_error("Validation failed: cgroup module requires sched module");
@@ -1076,7 +1173,6 @@ int config_check_paths(const Config *cfg) {
 
     for (int i = 0; i < cfg->sysfs.nr_knobs; i++) {
         const KnobDef *knob = &cfg->sysfs.knobs[i];
-        if (!knob->enabled) continue;
         total++;
 
         char concrete_path[MAX_PATH_LEN];
@@ -1092,7 +1188,7 @@ int config_check_paths(const Config *cfg) {
             path = concrete_path;
         }
 
-        int fd = open(path, O_WRONLY);
+        int fd = runtime_backend_open(path, O_WRONLY);
         if (fd < 0) {
             if (errno == ENOENT) {
                 log_warn("Config path not found: %s (%s)", path, knob->name);
@@ -1104,19 +1200,6 @@ int config_check_paths(const Config *cfg) {
             }
         } else {
             close(fd);
-        }
-    }
-
-    const char *dir = strrchr(cfg->switcher.switch_inode, '/');
-    if (dir) {
-        char dirpath[MAX_PATH_LEN];
-        size_t dirlen = (size_t)(dir - cfg->switcher.switch_inode);
-        if (dirlen >= MAX_PATH_LEN) dirlen = MAX_PATH_LEN - 1;
-        strncpy(dirpath, cfg->switcher.switch_inode, dirlen);
-        dirpath[dirlen] = '\0';
-        struct stat st;
-        if (stat(dirpath, &st) != 0 || !S_ISDIR(st.st_mode)) {
-            log_warn("Switch inode directory does not exist: %s (will be created at runtime)", dirpath);
         }
     }
 

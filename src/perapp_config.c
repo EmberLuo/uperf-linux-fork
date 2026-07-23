@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "perapp_config.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,7 +130,7 @@ PowerMode perapp_lookup_pid(const PerAppConfig *cfg, pid_t pid) {
     char comm_path[MAX_PATH_LEN];
     snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
 
-    FILE *fp = fopen(comm_path, "r");
+    FILE *fp = runtime_backend_fopen(comm_path, "r");
     if (!fp) return MODE_BALANCE;
 
     char comm[64];

@@ -2,6 +2,7 @@
 
 #include "task_scheduler.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -15,7 +16,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <time.h>
 #include <unistd.h>
 
 #ifndef SCHED_FLAG_RESET_ON_FORK
@@ -146,9 +146,7 @@ static int uperf_sched_setattr(pid_t tid, struct uperf_sched_attr *attr) {
 }
 
 static uint64_t monotonic_ms(void) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
-    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+    return runtime_backend_monotonic_ms();
 }
 
 static bool numeric_name(const char *name) {
@@ -161,7 +159,7 @@ static bool numeric_name(const char *name) {
 
 static int read_text_file(const char *path, char *buffer, size_t size) {
     if (!path || !buffer || size == 0) return -1;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = runtime_backend_open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
     ssize_t count = read(fd, buffer, size - 1);
     int saved = errno;
@@ -215,7 +213,7 @@ static bool read_process_identity(pid_t pid, char *comm, size_t comm_size,
 
     snprintf(path, sizeof(path), "/proc/%d", pid);
     struct stat st;
-    if (stat(path, &st) != 0) return false;
+    if (runtime_backend_stat(path, &st) != 0) return false;
     *uid = st.st_uid;
     *start_time = read_task_start_time(pid, pid);
     return *start_time != 0;
@@ -776,7 +774,7 @@ static int reconcile_process_threads(TaskScheduler *scheduler,
                                      TrackedProcess *process) {
     char path[96];
     snprintf(path, sizeof(path), "/proc/%d/task", process->pid);
-    DIR *directory = opendir(path);
+    DIR *directory = runtime_backend_opendir(path);
     if (!directory) return -1;
     uint64_t thread_generation = ++scheduler->generation;
     process->thread_generation = thread_generation;
@@ -850,7 +848,7 @@ static void remove_process(TaskScheduler *scheduler, int index) {
 
 static int discover_processes(TaskScheduler *scheduler,
                               const GameProcess *games, int nr_games) {
-    DIR *proc = opendir("/proc");
+    DIR *proc = runtime_backend_opendir("/proc");
     if (!proc) return -1;
     uint64_t process_generation = ++scheduler->generation;
     struct dirent *entry;
@@ -947,7 +945,8 @@ int task_scheduler_set_active_pid(TaskScheduler *scheduler, pid_t pid) {
         char path[64];
         snprintf(path, sizeof(path), "/proc/%d", pid);
         struct stat st;
-        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return -1;
+        if (runtime_backend_stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+            return -1;
         start_time = read_task_start_time(pid, pid);
         if (start_time == 0) return -1;
     }
@@ -965,12 +964,23 @@ pid_t task_scheduler_get_requested_active_pid(const TaskScheduler *scheduler) {
     return scheduler ? scheduler->requested_active_pid : 0;
 }
 
+bool task_scheduler_get_active_identity(const TaskScheduler *scheduler,
+                                        pid_t *pid, uint64_t *start_time) {
+    if (pid) *pid = 0;
+    if (start_time) *start_time = 0;
+    if (!scheduler || scheduler->effective_active_pid <= 0) return false;
+    if (pid) *pid = scheduler->effective_active_pid;
+    if (start_time) *start_time = scheduler->effective_active_start_time;
+    return true;
+}
+
 int task_scheduler_update(TaskScheduler *scheduler,
                           const GameProcess *games, int nr_games,
                           SceneState scene) {
     if (!scheduler || nr_games < 0) return -1;
     if (nr_games > 0 && !games) return -1;
-    if (!scheduler->sched.enable) return 0;
+    /* Foreground identity is also consumed by mode selection, so keep it
+     * current even when thread-policy scheduling itself is disabled. */
     if (scheduler->requested_active_pid > 0 &&
         read_task_start_time(scheduler->requested_active_pid,
                              scheduler->requested_active_pid) !=
@@ -993,6 +1003,8 @@ int task_scheduler_update(TaskScheduler *scheduler,
         scheduler->effective_active_start_time = effective_start;
         scheduler->force_discovery = true;
     }
+
+    if (!scheduler->sched.enable) return 0;
 
     uint64_t now = monotonic_ms();
     if (scheduler->force_discovery || scheduler->last_discovery_ms == 0 ||

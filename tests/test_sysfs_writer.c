@@ -62,7 +62,7 @@ TEST(test_writer_lifecycle) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.sysfs.nr_knobs = 0;
 
-    SysfsWriter *w = sysfs_writer_new(&cfg, 0);  /* No batching */
+    SysfsWriter *w = sysfs_writer_new(&cfg);
     if (!w) {
         printf("FAIL (sysfs_writer_new returned NULL)\n");
         tests_failed++;
@@ -72,29 +72,13 @@ TEST(test_writer_lifecycle) {
     ASSERT_PASS("writer create and destroy");
 }
 
-/* Test sysfs_writer with batching enabled */
-TEST(test_writer_with_batching) {
-    Config cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.sysfs.nr_knobs = 0;
-
-    SysfsWriter *w = sysfs_writer_new(&cfg, 1000000);  /* 1ms batch window */
-    if (!w) {
-        printf("FAIL (sysfs_writer_new with batching returned NULL)\n");
-        tests_failed++;
-        return;
-    }
-    sysfs_writer_free(w);
-    ASSERT_PASS("writer with batching created and destroyed");
-}
-
 /* Test queueing a raw write to a writable path */
 TEST(test_queue_raw_write) {
     Config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.sysfs.nr_knobs = 0;
 
-    SysfsWriter *w = sysfs_writer_new(&cfg, 0);
+    SysfsWriter *w = sysfs_writer_new(&cfg);
     if (!w) { printf("SKIP (writer creation failed)\n"); tests_run++; return; }
 
     int ret = sysfs_writer_queue_raw(w, "/proc/self/oom_score_adj", "0");
@@ -109,11 +93,12 @@ TEST(test_flush_empty) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.sysfs.nr_knobs = 0;
 
-    SysfsWriter *w = sysfs_writer_new(&cfg, 0);
+    SysfsWriter *w = sysfs_writer_new(&cfg);
     if (!w) { printf("SKIP (writer creation failed)\n"); tests_run++; return; }
 
-    sysfs_writer_flush(w);
+    int ret = sysfs_writer_flush(w);
     sysfs_writer_free(w);
+    if (ret != 0) { printf("FAIL (empty flush)\n"); tests_failed++; return; }
     ASSERT_PASS("flush on empty writer succeeds");
 }
 
@@ -123,13 +108,18 @@ TEST(test_queue_nonexistent_path) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.sysfs.nr_knobs = 0;
 
-    SysfsWriter *w = sysfs_writer_new(&cfg, 0);
+    SysfsWriter *w = sysfs_writer_new(&cfg);
     if (!w) { printf("SKIP (writer creation failed)\n"); tests_run++; return; }
 
     /* Queue a write to a nonexistent path — should not crash */
     sysfs_writer_queue_raw(w, "/sys/nonexistent/knob", "1");
-    sysfs_writer_flush(w);
+    int flush_ret = sysfs_writer_flush(w);
     sysfs_writer_free(w);
+    if (flush_ret == 0) {
+        printf("FAIL (queued write failure not returned)\n");
+        tests_failed++;
+        return;
+    }
     ASSERT_PASS("queue nonexistent path does not crash");
 }
 
@@ -170,7 +160,7 @@ TEST(test_immediate_and_full_batch_write) {
     close(fd);
 
     Config cfg = {0};
-    SysfsWriter *w = sysfs_writer_new(&cfg, 1000000000ULL);
+    SysfsWriter *w = sysfs_writer_new(&cfg);
     if (!w) { unlink(path); tests_failed++; return; }
     if (sysfs_writer_write_raw(w, path, "A") != 0) {
         printf("FAIL (immediate write)\n");
@@ -200,7 +190,6 @@ int main(void) {
     RUN_TEST(test_read_nonexistent);
     RUN_TEST(test_read_proc_self);
     RUN_TEST(test_writer_lifecycle);
-    RUN_TEST(test_writer_with_batching);
     RUN_TEST(test_queue_raw_write);
     RUN_TEST(test_flush_empty);
     RUN_TEST(test_queue_nonexistent_path);

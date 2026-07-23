@@ -1,17 +1,15 @@
 #define _GNU_SOURCE
 #include "state_machine.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include <time.h>
 
 /* Helper: monotonic time in milliseconds */
 static uint64_t now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000ULL + ts.tv_nsec / 1000000ULL;
+    return runtime_backend_monotonic_ms();
 }
 
 /* Internal state machine implementation */
@@ -61,33 +59,15 @@ static void merge_action_params(ActionParams *dst, const ActionParams *src) {
     uint32_t mask = src->tuning_present;
 #define MERGE_TUNING(bit, member) \
     do { if (mask & (bit)) dst->member = src->member; } while (0)
-    MERGE_TUNING(ACTION_TUNE_LATENCY_TIME, latency_time);
-    MERGE_TUNING(ACTION_TUNE_SLOW_LIMIT_POWER, slow_limit_power);
-    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_POWER, fast_limit_power);
-    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_CAPACITY, fast_limit_capacity);
-    MERGE_TUNING(ACTION_TUNE_FAST_LIMIT_RECOVER_SCALE,
-                 fast_limit_recover_scale);
     MERGE_TUNING(ACTION_TUNE_MARGIN, margin);
     MERGE_TUNING(ACTION_TUNE_BURST, burst);
-    MERGE_TUNING(ACTION_TUNE_GUIDE_CAP, guide_cap);
     MERGE_TUNING(ACTION_TUNE_LIMIT_EFFICIENCY, limit_efficiency);
     MERGE_TUNING(ACTION_TUNE_BASE_SAMPLE_TIME, base_sample_time);
-    MERGE_TUNING(ACTION_TUNE_BASE_SLACK_TIME, base_slack_time);
-    MERGE_TUNING(ACTION_TUNE_PREDICT_THD, predict_thd);
 #undef MERGE_TUNING
     dst->tuning_present |= mask;
 
-#define MERGE_FLAGGED(flag, member) \
-    do { if (src->flag) { dst->flag = true; dst->member = src->member; } } while (0)
-    MERGE_FLAGGED(has_gpu_max_freq, gpu_max_freq);
-    MERGE_FLAGGED(has_gpu_min_freq, gpu_min_freq);
-    MERGE_FLAGGED(has_ddr_max_freq, ddr_max_freq);
-    MERGE_FLAGGED(has_sched_boost, sched_boost_value);
-#undef MERGE_FLAGGED
-    if (src->has_governor) {
-        dst->has_governor = true;
-        memcpy(dst->governor, src->governor, sizeof(dst->governor));
-    }
+    /* Explicit per-cluster frequency clamps (consumed by
+     * frequency_controller_compute_limits). */
     if (src->has_cpu_freq_max) {
         dst->has_cpu_freq_max = true;
         memcpy(dst->cpu_freq_max, src->cpu_freq_max,
@@ -98,30 +78,14 @@ static void merge_action_params(ActionParams *dst, const ActionParams *src) {
         memcpy(dst->cpu_freq_min, src->cpu_freq_min,
                sizeof(dst->cpu_freq_min));
     }
-    if (src->has_uclamp_min) {
-        dst->has_uclamp_min = true;
-        memcpy(dst->uclamp_min, src->uclamp_min, sizeof(dst->uclamp_min));
-    }
-    if (src->has_uclamp_max) {
-        dst->has_uclamp_max = true;
-        memcpy(dst->uclamp_max, src->uclamp_max, sizeof(dst->uclamp_max));
-    }
 }
 
 static ActionParams initial_action(const Config *cfg) {
     ActionParams action = {0};
-    action.latency_time = cfg->initial_latency_time;
-    action.slow_limit_power = cfg->initial_slow_limit_power;
-    action.fast_limit_power = cfg->initial_fast_limit_power;
-    action.fast_limit_capacity = cfg->initial_fast_limit_capacity;
-    action.fast_limit_recover_scale = cfg->initial_fast_limit_recover_scale;
     action.margin = cfg->initial_margin;
     action.burst = cfg->initial_burst;
-    action.guide_cap = cfg->initial_guide_cap;
     action.limit_efficiency = cfg->initial_limit_efficiency;
     action.base_sample_time = cfg->initial_base_sample_time;
-    action.base_slack_time = cfg->initial_base_slack_time;
-    action.predict_thd = cfg->initial_predict_thd;
     return action;
 }
 

@@ -1,0 +1,4 @@
+after_sigkill=500000,700000,800000
+after_restart=300000,400000,600000
+gpu_after_restart=200000000,400000000
+snapshot=cleared

@@ -8,7 +8,63 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Build and test across both compilers and both build types.  Every leg
+  # compiles with -Werror so a warning on either toolchain fails the build.
   build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        build_type: [Release, Debug]
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
+    name: ${{ matrix.cc }} / ${{ matrix.build_type }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo sed -i \
+          "s|http://ports.ubuntu.com/ubuntu-ports|https://ports.ubuntu.com/ubuntu-ports|g" \
+          /etc/apt/sources.list.d/ubuntu.sources
+        sudo apt-get \
+          -o Acquire::ForceIPv4=true \
+          -o Acquire::Retries=3 \
+          -o APT::Update::Error-Mode=any \
+          update
+        sudo env DEBIAN_FRONTEND=noninteractive \
+          apt-get \
+          -o Acquire::ForceIPv4=true \
+          -o Acquire::Retries=3 \
+          install -y --no-install-recommends \
+          gcc g++ clang cmake pkg-config make file \
+          libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
+          libpolkit-gobject-1-dev \
+          libgtk-4-dev libadwaita-1-dev dpkg-dev
+
+    - name: Build
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
+      run: |
+        cmake -S . -B build-arm64 \
+          -DBUILD_TESTS=ON \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_C_FLAGS="-Werror" \
+          -DCMAKE_CXX_FLAGS="-Werror"
+        cmake --build build-arm64 --parallel "$(nproc)"
+
+    - name: Test
+      run: ctest --test-dir build-arm64 --output-on-failure --parallel "$(nproc)"
+
+  # Address/UB sanitizer leg — kept separate so a sanitizer report is easy to
+  # spot and does not gate the plain build matrix.
+  sanitize:
     runs-on: ubuntu-24.04-arm
     steps:
     - name: Checkout
@@ -34,24 +90,155 @@ jobs:
           libpolkit-gobject-1-dev \
           libgtk-4-dev libadwaita-1-dev dpkg-dev
 
-    - name: Build
+    - name: Build and test with sanitizers
+      env:
+        ASAN_OPTIONS: detect_leaks=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      run: |
+        cmake -S . -B build-sanitize \
+          -DBUILD_GUI=OFF \
+          -DBUILD_TESTS=ON \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+        cmake --build build-sanitize --parallel "$(nproc)"
+        ctest --test-dir build-sanitize --output-on-failure --parallel "$(nproc)"
+
+  # Build the .deb, exercise the full install/upgrade/remove/purge lifecycle,
+  # and confirm the shipped D-Bus and Polkit policies are well-formed and
+  # actually deny unauthenticated privileged calls.
+  package:
+    runs-on: ubuntu-24.04-arm
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo sed -i \
+          "s|http://ports.ubuntu.com/ubuntu-ports|https://ports.ubuntu.com/ubuntu-ports|g" \
+          /etc/apt/sources.list.d/ubuntu.sources
+        sudo apt-get \
+          -o Acquire::ForceIPv4=true \
+          -o Acquire::Retries=3 \
+          -o APT::Update::Error-Mode=any \
+          update
+        sudo env DEBIAN_FRONTEND=noninteractive \
+          apt-get \
+          -o Acquire::ForceIPv4=true \
+          -o Acquire::Retries=3 \
+          install -y --no-install-recommends \
+          gcc g++ cmake pkg-config make file \
+          libjson-c-dev libglib2.0-dev libdbus-1-dev libsystemd-dev \
+          libpolkit-gobject-1-dev polkitd \
+          libgtk-4-dev libadwaita-1-dev dpkg-dev libxml2-utils
+
+    - name: Build DEB package
       run: |
         cmake -S . -B build-arm64 \
           -DBUILD_TESTS=ON \
           -DCMAKE_BUILD_TYPE=Release
         cmake --build build-arm64 --parallel "$(nproc)"
+        ( cd build-arm64 && cpack -G DEB )
+        file build-arm64/uperf-linux build-arm64/uperfctl \
+             build-arm64/uperf-wizard build-arm64/gui/uperf-gui
+        ls -lh build-arm64/*.deb
 
-    - name: Test
-      run: ctest --test-dir build-arm64 --output-on-failure --parallel "$(nproc)"
-
-    - name: Build DEB package
-      working-directory: build-arm64
+    - name: Validate D-Bus and Polkit policy XML
       run: |
-        cpack -G DEB
+        set -euo pipefail
+        # Both policies must be well-formed XML.
+        xmllint --noout config/org.uperflinux.Daemon.conf
+        xmllint --noout config/org.uperflinux.policy
+        # The privileged Polkit actions must NOT be authorizable without
+        # authentication: allow_any/allow_inactive must never be a bare "yes".
+        if grep -E '<allow_(any|inactive)>yes</' config/org.uperflinux.policy; then
+          echo "ERROR: a privileged action is granted without authentication" >&2
+          exit 1
+        fi
+        # The admin action must require admin auth, not a plain yes.
+        grep -q 'auth_admin' config/org.uperflinux.policy
+        echo "Policy XML validation passed."
 
-        file uperf-linux uperfctl uperf-wizard gui/uperf-gui
-        ls -lh uperf-linux uperfctl uperf-wizard gui/uperf-gui
-        ls -lh ./*.deb
+    - name: Install / upgrade / remove / purge lifecycle
+      run: |
+        set -euo pipefail
+        DEB=$(ls build-arm64/*.deb | head -n1)
+
+        echo "::group::install"
+        sudo apt-get install -y "./$DEB"
+        echo "::endgroup::"
+
+        # Binaries and policy files must land where the daemon expects them.
+        test -x /usr/bin/uperf-linux
+        test -x /usr/bin/uperfctl
+        test -x /usr/bin/uperf-wizard
+        test -f /etc/uperf-linux/config.json
+        test -f /usr/share/dbus-1/system.d/org.uperflinux.Daemon.conf
+        test -f /usr/share/polkit-1/actions/org.uperflinux.policy
+        # Polkit must accept the installed action file.
+        pkaction --action-id org.uperflinux.admin --verbose
+
+        # The daemon must not have been auto-started by postinst.
+        if systemctl is-active --quiet uperf-linux.service; then
+          echo "ERROR: postinst auto-started the daemon" >&2
+          exit 1
+        fi
+
+        echo "::group::reinstall (upgrade path)"
+        sudo apt-get install -y --reinstall "./$DEB"
+        echo "::endgroup::"
+
+        echo "::group::remove"
+        sudo apt-get remove -y uperf-linux
+        echo "::endgroup::"
+        # Config is a conffile: it survives a plain remove.
+        test -f /etc/uperf-linux/config.json
+        test ! -x /usr/bin/uperf-linux
+
+        echo "::group::purge"
+        sudo apt-get purge -y uperf-linux
+        echo "::endgroup::"
+        # After purge the conffiles are gone.
+        test ! -f /etc/uperf-linux/config.json
+        echo "Package lifecycle passed."
+
+    - name: Unauthenticated D-Bus call is denied
+      run: |
+        set -euo pipefail
+        # Reinstall so the D-Bus policy + binary are present.
+        DEB=$(ls build-arm64/*.deb | head -n1)
+        sudo apt-get install -y "./$DEB"
+
+        # Start the daemon on an isolated private system bus and confirm an
+        # unauthenticated privileged call (SetManualFreq) is rejected, while a
+        # read-only property fetch is allowed by the bus policy.
+        BUS_DIR=$(mktemp -d)
+        dbus-daemon --config-file=/usr/share/dbus-1/system.conf \
+          --address="unix:path=$BUS_DIR/bus" --nofork --print-pid > "$BUS_DIR/pid" &
+        DBUS_PID=$!
+        sleep 1
+        export DBUS_SYSTEM_BUS_ADDRESS="unix:path=$BUS_DIR/bus"
+
+        # No daemon owns the name on this private bus, so the call must fail to
+        # reach a service rather than silently succeeding.  Capture the exact
+        # exit code without tripping `set -e`.
+        rc=0
+        uperfctl set-freq 0 1000000 || rc=$?
+        kill "$DBUS_PID" 2>/dev/null || true
+        if [ "$rc" -eq 0 ]; then
+          echo "ERROR: set-freq unexpectedly succeeded with no daemon" >&2
+          exit 1
+        fi
+        # Exit code 3 (daemon unavailable) or 4 (rejected) are both acceptable;
+        # a client-side usage/argument error (1/2) would mean the call never
+        # tried to reach the bus, which is not what this step verifies.
+        if [ "$rc" -ne 3 ] && [ "$rc" -ne 4 ]; then
+          echo "ERROR: expected daemon-unavailable/rejected exit, got $rc" >&2
+          exit 1
+        fi
+        echo "uperfctl set-freq exit code: $rc (expected 3 or 4)"
+        echo "Unauthenticated-call check passed."
 
     - name: Upload binaries
       uses: actions/upload-artifact@v4

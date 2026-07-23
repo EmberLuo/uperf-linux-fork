@@ -16,6 +16,12 @@
 /* Opaque DBus manager handle */
 typedef struct DbusManager DbusManager;
 
+/* The D-Bus introspection XML the daemon actually registers on the bus.  This
+ * embedded string is the single source of truth for the interface; the
+ * installed config/dbus-interface.xml is documentation and is checked against
+ * this by the dbus_interface_xml guard test. */
+const char *dbus_manager_introspection_xml(void);
+
 /* Create and register the DBus manager.
  * bus_type: G_BUS_TYPE_SYSTEM or G_BUS_TYPE_SESSION
  * Returns NULL on failure. */

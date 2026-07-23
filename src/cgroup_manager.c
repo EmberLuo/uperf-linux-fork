@@ -2,6 +2,7 @@
 
 #include "cgroup_manager.h"
 #include "log.h"
+#include "runtime_backend.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,7 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #ifdef HAVE_LIBSYSTEMD
@@ -67,14 +67,11 @@ struct CgroupManager {
 };
 
 static uint64_t monotonic_ms(void) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
-    return (uint64_t)now.tv_sec * 1000u +
-        (uint64_t)now.tv_nsec / 1000000u;
+    return runtime_backend_monotonic_ms();
 }
 
 static int read_text_file(const char *path, char *buffer, size_t size) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = runtime_backend_open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
     ssize_t count = read(fd, buffer, size - 1);
     int saved = errno;

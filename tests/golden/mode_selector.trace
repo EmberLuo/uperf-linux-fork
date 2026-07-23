@@ -1,0 +1,5 @@
+no_gui=performance
+foreground_performance=performance
+foreground_powersave=powersave
+foreground_balance=powersave
+unknown_foreground=performance

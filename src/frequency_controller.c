@@ -83,3 +83,54 @@ void frequency_controller_compute_limits(const PowerModelEntry *model,
     *minimum_hz = min_hz;
     *maximum_hz = max_hz;
 }
+
+OppSnapStatus frequency_controller_snap_limits(const OppTable *opp,
+                                               int64_t *minimum_hz,
+                                               int64_t *maximum_hz) {
+    if (!minimum_hz || !maximum_hz || !opp || opp->count <= 0)
+        return OPP_SNAP_NONE;
+
+    int64_t requested_min = *minimum_hz;
+
+    int64_t lowest = opp->freq_hz[0];
+    int64_t highest = opp->freq_hz[0];
+    for (int i = 1; i < opp->count && i < MAX_OPP_POINTS; i++) {
+        if (opp->freq_hz[i] < lowest) lowest = opp->freq_hz[i];
+        if (opp->freq_hz[i] > highest) highest = opp->freq_hz[i];
+    }
+
+    /* maximum: highest OPP not exceeding the intended ceiling. */
+    int64_t snapped_max = lowest;
+    bool found_max = false;
+    for (int i = 0; i < opp->count && i < MAX_OPP_POINTS; i++) {
+        int64_t f = opp->freq_hz[i];
+        if (f <= *maximum_hz && (!found_max || f > snapped_max)) {
+            snapped_max = f;
+            found_max = true;
+        }
+    }
+
+    /* minimum: lowest OPP at or above the intended floor. */
+    int64_t snapped_min = highest;
+    bool found_min = false;
+    for (int i = 0; i < opp->count && i < MAX_OPP_POINTS; i++) {
+        int64_t f = opp->freq_hz[i];
+        if (f >= *minimum_hz && (!found_min || f < snapped_min)) {
+            snapped_min = f;
+            found_min = true;
+        }
+    }
+
+    OppSnapStatus status = OPP_SNAP_APPLIED;
+    if (!found_max) status |= OPP_SNAP_CEILING_RAISED;
+    if (!found_min || snapped_min > snapped_max) {
+        /* No valid OPP can satisfy both constraints.  Do not exceed a thermal
+         * ceiling merely to satisfy a demand floor. */
+        snapped_min = snapped_max;
+        if (snapped_min < requested_min)
+            status |= OPP_SNAP_FLOOR_RELAXED;
+    }
+    *minimum_hz = snapped_min;
+    *maximum_hz = snapped_max;
+    return status;
+}
